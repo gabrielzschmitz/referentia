@@ -35,15 +35,16 @@ if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
   RESET="\033[0m"
   BOLD="\033[1m"
   DIM="\033[2m"
-  BG_MAGENTA="\033[45m"
+  BG_RED="\033[41m"
   WHITE="\033[37m"
+  BLACK="\033[30m"
   GREEN="\033[32m"
   CYAN="\033[36m"
   YELLOW="\033[33m"
   RED="\033[31m"
 else
-  RESET=""; BOLD=""; DIM=""; BG_MAGENTA=""
-  WHITE=""; GREEN=""; CYAN=""; YELLOW=""; RED=""
+  RESET=""; BOLD=""; DIM=""; BG_RED=""
+  WHITE=""; BLACK=""; GREEN=""; CYAN=""; YELLOW=""; RED="";
 fi
 
 # ============================================================
@@ -70,7 +71,7 @@ print_banner() {
   # The logo: a board on a stand, echoing the app icon. White lineart on a
   # magenta plate, so the whole block reads as one badge. Art is 23 columns
   # wide, indented 8 to sit centred under the 39-column title rule below.
-  local plate="${BOLD}${WHITE}${BG_MAGENTA}"
+  local plate="${BOLD}${BLACK}${BG_RED}"
   echo -e "          ${plate}    ┌─────────┐    ${RESET}"
   echo -e "          ${plate}  ╔═╧═════════╧═╗  ${RESET}"
   echo -e "          ${plate}  ║ ┌─────────┐ ║  ${RESET}"
@@ -165,10 +166,24 @@ generate_makefiles() {
   ensure_premake
   log_info "Generating makefiles…"
 
-  if ! (cd "${BUILD_DIR}" && "${PREMAKE_BIN}" gmake) >/dev/null 2>&1; then
-    (cd "${BUILD_DIR}" && "${PREMAKE_BIN}" gmake) 2>&1 | indent
+  # Premake's stdout is captured rather than discarded, and replayed only for
+  # the lines that describe real work. It is what prints the raylib download
+  # and its progress bar: a first build fetches ~50MB, and swallowing that
+  # leaves the user staring at a build that appears to hang for a minute with
+  # no explanation. The project list premake prints on every run is not worth
+  # forwarding, which is why this filters instead of just removing >/dev/null.
+  local premake_log
+  premake_log="$(cd "${BUILD_DIR}" && "${PREMAKE_BIN}" gmake 2>&1)" || {
+    printf '%s\n' "${premake_log}" | indent
     log_err "Premake5 failed to generate makefiles."
     exit 1
+  }
+  if [[ "${premake_log}" == *"not found, downloading"* ||
+    "${premake_log}" == *"Unzipping"* ||
+    "${premake_log}" == *"Removing stale"* ]]; then
+    printf '%s\n' "${premake_log}" |
+      grep -E "not found, downloading|Download progress|Unzipping|Removing stale" |
+      indent
   fi
 
   # Sanity check: the generated make must point back at this checkout.
@@ -194,6 +209,15 @@ make_clean() {
   local config="$1"
   log_info "Cleaning ${config} (all projects)…"
   (cd "${ROOT}" && make config="${config}" clean) >/dev/null 2>&1 || true
+  # `make clean` walks the current dependency graph, so it structurally cannot
+  # remove an object whose source path no longer exists. That is exactly what
+  # changing a pinned dependency leaves behind: moving raylib from
+  # raylib-master to raylib-6.0 orphans objects that still name the old path as
+  # a prerequisite, and the next build dies with "No rule to make target". The
+  # makefile looks correct, which is what makes it so confusing. Deleting the
+  # generated object tree outright is the only way to guarantee the next build
+  # starts from nothing.
+  rm -rf "${BUILD_DIR}/build_files/obj"
   log_ok "Cleaned"
 }
 

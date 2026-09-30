@@ -152,18 +152,50 @@ if ! have_display; then
   exit 0
 fi
 
-cat <<EOF
-  ${BOLD}Controls${RESET}
-    ${DIM}Wheel${RESET}               Zoom about the cursor
-    ${DIM}Middle-drag${RESET}         Pan (or Space + left-drag)
-    ${DIM}=${RESET}                     Reset to the origin at zoom 1
-    ${DIM}ESC, Q${RESET}              Quit
-    ${DIM}F10${RESET}                  Toggle the UI panel
-    ${DIM}F11${RESET}                  Toggle the FPS readout
-    ${DIM}F3 / F8${RESET}              Toggle / emit frame-time report
-    ${DIM}F12${RESET}                  Dump the live ECS (debug builds)
+print_controls() {
+  local controls line key desc width=0
 
-EOF
+  # PrintUsage() in src/app/app.cpp is the only place that knows the key
+  # bindings. This used to keep its own hand-written copy, which had already
+  # drifted from it, so ask the binary instead: adding a binding is then a
+  # one-file change. The binary exits before opening a window, which is what
+  # makes calling it from a script safe.
+  # `|| true` is load-bearing: the script runs under `set -euo pipefail`, and
+  # pipefail makes the pipeline inherit a non-zero status from a binary that
+  # will not run -- a stale libraylib, for instance. That would abort the
+  # script here, hiding the app's own "cannot open a window" message behind a
+  # bare exit 127. An unrunnable binary just means we skip the block.
+  controls="$("${BINARY}" --help 2>/dev/null | sed -n '/^Controls:/,$p' | tail -n +2 || true)"
+  [ -n "${controls}" ] || return 0
+
+  # Width of the widest key, so the description column is derived from the data
+  # rather than hand-counted. A longer key added later re-aligns itself.
+  while IFS= read -r line; do
+    line="${line#  }"
+    [ -n "${line}" ] || continue
+    key="${line%%  *}"
+    [ "${#key}" -gt "${width}" ] && width="${#key}"
+  done <<< "${controls}"
+
+  printf '  %bControls%b\n' "${BOLD}" "${RESET}"
+  while IFS= read -r line; do
+    line="${line#  }"
+    [ -n "${line}" ] || continue
+    # Split on the first run of 2+ spaces, not on single whitespace: a key can
+    # itself contain a space ("ESC, Q", and "Space + drag" one day), and
+    # word-splitting turns that into a key of "ESC," followed by junk.
+    key="${line%%  *}"
+    desc="${line#"${key}"}"
+    # Trim the padding between the columns; only now is desc pure description.
+    desc="${desc#"${desc%%[![:space:]]*}"}"
+    # printf %b, never a heredoc: cat copies backslash escapes verbatim, so a
+    # heredoc emits the five literal characters \033[2m instead of a real dim
+    # escape. %-Ns pads the key alone, so colouring never shifts the column.
+    printf '    %b%-*s%b  %s\n' "${DIM}" "${width}" "${key}" "${RESET}" "${desc}"
+  done <<< "${controls}"
+}
+
+print_controls
 
 log_info "Starting ${PROJECT}…"
 echo

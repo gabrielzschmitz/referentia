@@ -262,14 +262,22 @@ with `Ctrl+Shift+B`, run with `F5`.
 
 ### "raylib not found"
 
-`premake5` downloads raylib to `build/external/raylib-master` on first run. If
-the download fails, fetch it manually:
+`premake5` downloads the pinned raylib release to
+`build/external/raylib-<version>` on first run. The version is `RAYLIB_VERSION`
+near the top of `build/premake5.lua`; a release tag is pinned rather than
+`master` so a build cannot break because upstream moved. If the download fails,
+fetch it manually with the same version:
 
 ```bash
+VERSION=6.0                      # keep in step with RAYLIB_VERSION
 cd build/external
-curl -LO https://github.com/raysan5/raylib/archive/refs/heads/master.zip
-unzip -q master.zip && rm master.zip
+curl -LO "https://github.com/raysan5/raylib/archive/refs/tags/${VERSION}.zip"
+unzip -q "${VERSION}.zip" && rm "${VERSION}.zip"   # extracts to raylib-${VERSION}/
 ```
+
+Premake removes any other `raylib-*` directory in `build/external` before it
+downloads, so a version bump cannot leave two raylib trees side by side. If you
+do end up with a mix, delete `build/external/raylib-*` and build again.
 
 ### Missing X11 headers (Linux)
 
@@ -333,7 +341,8 @@ Referentia/
 
 ## Additional Information
 
-* **Raylib**: 6.1-dev (downloaded automatically by premake)
+* **Raylib**: 6.0, pinned to the release tag (downloaded automatically by
+  premake; see `RAYLIB_VERSION` in `build/premake5.lua`)
 * **C Standard**: C17 / GNU17 (GNU17 for web builds)
 * **C++ Standard**: C++17 / GNU++17 (GNU++17 for web builds)
 * **UI font**: Work Sans, all nine statics (Thin..Black, upright and

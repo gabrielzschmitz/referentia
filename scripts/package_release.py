@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package fluvius build outputs into a zip for releases.
+"""Package Referentia build outputs into a zip for releases.
 
 Usage:
     python3 scripts/package_release.py <root> --out <out.zip> <entry> [<entry> ...]
@@ -34,7 +34,7 @@ def add_entry(zip_out: zipfile.ZipFile, root: str, entry: str,
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-            description="Package fluvius build outputs into a zip.")
+            description="Package Referentia build outputs into a zip.")
     parser.add_argument("root", help="directory containing the build outputs")
     parser.add_argument("--out", required=True, help="output zip path")
     parser.add_argument("entries", nargs="+",

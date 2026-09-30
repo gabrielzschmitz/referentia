@@ -81,28 +81,102 @@ local function apply_perf_flags()
 	filter({})
 end
 
+-- raylib download progress.
+--
+-- Premake calls this as onprogress(total, current) -- arg1 is the full size,
+-- arg2 is the bytes received so far -- and only when it is passed as the third
+-- *positional* argument. Passing it as { progress = ... } is not a table
+-- premake reads: the download still happens, but this never runs and premake
+-- falls back to its own printer, which reports 0% for the whole transfer, once
+-- per read chunk. That is about ten thousand lines for the 50MB archive.
+--
+-- Stepped in 10s because the callback fires per chunk, so any finer report is
+-- effectively a line per chunk, and a build log is read by a person.
+local last_percent = -1
+
 function download_progress(total, current)
-	local ratio = current / total
-	ratio = math.min(math.max(ratio, 0), 1)
-	local percent = math.floor(ratio * 100)
+	if not total or not current or total <= 0 then return end
+	local percent = math.floor((current / total) * 100 / 10) * 10
+	if percent <= last_percent then return end
+	last_percent = percent
 	print("Download progress (" .. percent .. "%/100%)")
 end
 
+-- Pinned raylib release.
+--
+-- A release tag, not a branch. master moves under you, so a build that worked
+-- yesterday fails today with nothing in this repository having changed, and
+-- there is no way to tell which raylib a given tree was built against. Bump
+-- RAYLIB_VERSION deliberately; the archive extracts to raylib-<version>, so
+-- bumping it is what triggers the download.
+RAYLIB_VERSION = "6.0"
+RAYLIB_DIRNAME = "raylib-" .. RAYLIB_VERSION
+RAYLIB_URL = "https://github.com/raysan5/raylib/archive/refs/tags/"
+	.. RAYLIB_VERSION
+	.. ".zip"
+
 function check_raylib()
 	os.chdir("external")
-	if os.isdir("raylib-master") == false then
-		if not os.isfile("raylib-master.zip") then
-			print("Raylib not found, downloading from github")
-			local result_str, response_code =
-				http.download("https://github.com/raysan5/raylib/archive/refs/heads/master.zip", "raylib-master.zip", {
-					progress = download_progress,
-					headers = { "From: Premake", "Referer: Premake" },
-				})
+
+	-- Wipe any other raylib tree before downloading. Bumping RAYLIB_VERSION
+	-- otherwise strands the previous checkout next to the new one, and a stale
+	-- libraylib left over from another revision is a genuinely miserable thing
+	-- to debug: the makefile looks right and the link still goes wrong.
+	-- os.matchdirs is premake's directory lister, and it takes glob patterns,
+	-- not Lua patterns: %d and [0-9] are literals to it. "raylib-" as a prefix
+	-- is deliberate, so a directory merely containing the word is left alone.
+	for _, entry in ipairs(os.matchdirs("raylib-*") or {}) do
+		if entry ~= RAYLIB_DIRNAME then
+			print("Removing stale raylib tree: " .. entry)
+			os.rmdir(entry, true)
+		end
+	end
+
+	if not os.isdir(RAYLIB_DIRNAME) then
+		local zip_name = RAYLIB_DIRNAME .. ".zip"
+		if not os.isfile(zip_name) then
+			print(
+				"raylib "
+				.. RAYLIB_VERSION
+				.. " not found, downloading "
+				.. RAYLIB_URL
+			)
+			local _, code = http.download(RAYLIB_URL, zip_name,
+				download_progress)
+			-- http.download leaves no file and returns a non-200 code on
+			-- failure. Without this the next line tries to unzip something
+			-- that is not there, and premake reports "cannot open zip", which
+			-- says nothing at all about the real problem.
+			if not os.isfile(zip_name) then
+				error(
+					"Failed to download raylib "
+						.. RAYLIB_VERSION
+						.. " from "
+						.. RAYLIB_URL
+						.. " (HTTP "
+						.. tostring(code)
+						.. "). See INSTALL.md for the manual instructions."
+				)
+			end
 		end
 		print("Unzipping to " .. os.getcwd())
-		zip.extract("raylib-master.zip", os.getcwd())
-		os.remove("raylib-master.zip")
+		zip.extract(zip_name, os.getcwd())
+		os.remove(zip_name)
 	end
+
+	-- Cheap insurance against a truncated or renamed archive: everything
+	-- downstream assumes this directory and its src/ are real.
+	if not os.isdir(RAYLIB_DIRNAME .. "/src") then
+		error(
+			"raylib "
+				.. RAYLIB_VERSION
+				.. " expected at build/external/"
+				.. RAYLIB_DIRNAME
+				.. "/src after extraction, but it is not there. Delete that "
+				.. "directory and build again."
+		)
+	end
+
 	os.chdir("../")
 end
 
@@ -176,7 +250,7 @@ downloadRaylib = true
 -- _SCRIPT_DIR is already the directory holding this script (build/), so the
 -- repository root is its parent.
 local ROOT = path.getabsolute(path.join(path.getabsolute(_SCRIPT_DIR), ".."))
-raylib_dir = path.join(ROOT, "build/external/raylib-master")
+raylib_dir = path.join(ROOT, "build/external", RAYLIB_DIRNAME)
 
 -- The workspace is always named after the repository directory, so a clone
 -- called `Referentia` produces `Referentia.sln` and `referentia` targets
@@ -560,6 +634,14 @@ if not _OPTIONS["with-emscripten"] then
 	kind("StaticLib")
 
 	platform_defines()
+
+	-- raylib binds F12 to its own auto-screenshot, which writes a fixed
+	-- screenshotNNN.png into the working directory and cannot be given a name.
+	-- The app owns F12 (app/screenshot.h) and writes timestamped captures under
+	-- screenshots/, so leaving raylib's on means every press produces two files,
+	-- one of them in the repo root. config.h guards the feature with #ifndef, so
+	-- defining it to 0 here turns the built-in path off.
+	defines({ "SUPPORT_SCREEN_CAPTURE=0" })
 
 	location("build_files/")
 

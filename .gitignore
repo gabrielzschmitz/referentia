@@ -398,7 +398,10 @@ FodyWeavers.xsd
 # JetBrains Rider
 *.sln.iml
 build_files
-raylib-master
+# raylib source tree, downloaded by premake at the version pinned in
+# build/premake5.lua (RAYLIB_VERSION). Matched by version so bumping the pin
+# does not leave the old tree untracked.
+build/external/raylib-*
 Makefile
 /*.sln
 
