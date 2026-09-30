@@ -7,6 +7,7 @@
 // here, otherwise its TEST() registrations never reach the registry and the
 // suite silently runs zero tests.
 #include "app/test_font_faces.h"
+#include "app/test_frame_history.h"
 #include "board/test_board_math.h"
 #include "board/test_board_entities.h"
 #include "ecs/bench_ecs.h"

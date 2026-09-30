@@ -3,6 +3,7 @@
 
 #include "app/font_faces.h"
 #include "raylib.h"
+#include "systems/frame_history.h"
 
 /*
  * Window / scaling defaults.
@@ -42,6 +43,42 @@ inline int display_refresh_rate = 0;
  * declared here now, ahead of the text widget that has to honour it.
  */
 inline bool ui_keyboard_capture = false;
+
+/*
+ * Visibility of the frame-rate readout and the frame-time graph underneath it.
+ *
+ * Both live in globals.h rather than being file-static in app.cpp because the
+ * F10 board panel binds checkboxes straight to them: the key and the checkbox
+ * have to drive the same flag, or the panel lies about what the keyboard does.
+ *
+ * The graph is independent of the readout. Tying them together would mean F8
+ * silently does nothing until F11 happens to be on, which is exactly the sort of
+ * key that looks broken.
+ */
+inline bool show_fps = true;
+inline bool show_frame_graph = false;
+
+/*
+ * Rolling window of frame times behind the F8 graph.
+ *
+ * A global for the same reason the toggles above are: the app loop pushes into
+ * it every frame, the panel reads it when drawing, and the F10 checkbox clears
+ * it on re-enable. Three call sites, one buffer, so it cannot be duplicated
+ * into a local that one of them fails to see.
+ *
+ * Pushed unconditionally, even while the graph is off, so switching it on shows
+ * recent history rather than starting from an empty panel.
+ */
+inline referentia::systems::FrameTimeHistory g_frame_history;
+
+/*
+ * Smoothed vertical scale of the F8 graph, in milliseconds.
+ *
+ * Kept between frames so the plot does not rescale on every draw, which would
+ * make the whole visible history jitter. Owned here next to the history for
+ * the same reason: the value is meaningless apart from the buffer it scales.
+ */
+inline float g_graph_ceiling = 0.f;
 
 /*
  * Zoom bounds for the board camera. The low end has to go well below 1 so a
