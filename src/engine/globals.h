@@ -20,8 +20,13 @@ inline constexpr int WINDOW_H = 720;
  * this at draw time (see systems::ScaleRectCached). Raise it for HiDPI
  * displays; the fonts are rasterised at a matching base size so downscaling
  * stays sharp.
+ *
+ * Scaling here rather than inflating the per-widget font sizes is what keeps
+ * text and its container in proportion: the row heights and paddings are
+ * logical too, so raising the text alone clips it inside 20px-tall rows, while
+ * raising this makes the whole panel bigger on screen at the same ratio.
  */
-inline float ui_scale = 1.25f;
+inline float ui_scale = 1.5f;
 
 /*
  * Refresh rate of the monitor the window opened on, queried once at startup
@@ -121,6 +126,14 @@ inline constexpr int FONT_ATLAS_SIZE = 48;
 namespace theme {
 
 inline constexpr Color board_background{24, 25, 30, 255};
+
+/**
+ * Windows and floating surfaces (menus, tooltips) sit on the canvas, so they
+ * need to be a step darker than it. At the canvas colour they were invisible:
+ * the panel resolved to the same RGB as the background behind it, leaving only
+ * a hairline outline to say where the window ended.
+ */
+inline constexpr Color window_background{18, 19, 23, 255};
 inline constexpr Color board_grid_dot{255, 255, 255, 26};
 inline constexpr Color board_grid_axis{255, 255, 255, 52};
 

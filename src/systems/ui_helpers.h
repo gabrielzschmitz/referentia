@@ -17,15 +17,19 @@ using ::motrix::engine::Entity;
 using ::motrix::engine::INVALID_ENTITY;
 
 // Logical (pre-scale) layout constants shared by every UI draw/layout path.
-constexpr float kTitleBarHeight = 24.f;
-constexpr float kScrollbarWidth = 10.f;
-// Base label size for buttons, checkboxes, sliders, text and dropdowns. 12 is
-// about the floor for a pointer-driven tool; at 10 the labels were legible
-// only on a 1x display. Every consumer multiplies this by ui_scale, and the
-// intrinsic-width measurements below use the same constant, so changing it
-// rescales labels and widgets together.
-constexpr float kBaseFontSize = 12.f;
-constexpr float kDropdownOptionHeight = 22.f;
+constexpr float kTitleBarHeight = 34.f;
+constexpr float kScrollbarWidth = 14.f;
+// Base label size for buttons, checkboxes, sliders, text and dropdowns. 12 read
+// as a fine-print form, and 15 was still on the small side at 1x, so this is 17:
+// the panel is a tool you glance at while looking at the board, not a document.
+// Every consumer multiplies this by ui_scale, and the intrinsic-width
+// measurements below use the same constant, so changing it rescales labels and
+// widgets together.
+constexpr float kBaseFontSize = 17.f;
+/** Title-bar caption buttons. Their own size, not the body size: the dash and
+ * the cross are the whole glyph, so at body size they read as specks. */
+constexpr float kCaptionFontSize = 23.f;
+constexpr float kDropdownOptionHeight = 32.f;
 
 /**
  * Draw size must not exceed the rasterisation size (FONT_ATLAS_SIZE in
@@ -58,13 +62,15 @@ static_assert(kBaseFontSize <= 4096,
 
 // Width of `text` at a logical font size, before ui_scale is applied.
 inline float MeasureUiText(const std::string& text, float fontSize,
-                           FontWeight weight = FontWeight::Regular) {
-  return MeasureTextEx(GetFont(weight), text.c_str(), fontSize, 0.f).x;
+                           FontWeight weight = FontWeight::Regular,
+                           FontSlant slant = FontSlant::Upright) {
+  return MeasureTextEx(GetFont(weight, slant), text.c_str(), fontSize, 0.f).x;
 }
 
 inline float MeasureUiText(const char* text, float fontSize,
-                           FontWeight weight = FontWeight::Regular) {
-  return MeasureTextEx(GetFont(weight), text, fontSize, 0.f).x;
+                           FontWeight weight = FontWeight::Regular,
+                           FontSlant slant = FontSlant::Upright) {
+  return MeasureTextEx(GetFont(weight, slant), text, fontSize, 0.f).x;
 }
 
 inline Vector2 MeasureUiTextEx(const std::string& text, float fontSize,
@@ -77,37 +83,43 @@ inline Vector2 MeasureUiTextEx(const std::string& text, float fontSize,
 // ui_scale is applied here.
 inline void DrawUiText(FontWeight weight, const std::string& text,
                        Vector2 position, float fontSize, Color color,
-                       float spacing = 0.f) {
-  DrawTextEx(GetFont(weight), text.c_str(), position, fontSize * ui_scale,
-             spacing * ui_scale, color);
+                       float spacing = 0.f,
+                       FontSlant slant = FontSlant::Upright) {
+  DrawTextEx(GetFont(weight, slant), text.c_str(), position,
+             fontSize * ui_scale, spacing * ui_scale, color);
 }
 
 inline void DrawUiText(const std::string& text, Vector2 position, float fontSize,
                        Color color, float spacing = 0.f,
-                       FontWeight weight = FontWeight::Regular) {
-  DrawUiText(weight, text, position, fontSize, color, spacing);
+                       FontWeight weight = FontWeight::Regular,
+                       FontSlant slant = FontSlant::Upright) {
+  DrawUiText(weight, text, position, fontSize, color, spacing, slant);
 }
 
 // Draw text vertically centred inside `rect` (not scaled: `rect` is expected
 // to already be in screen space).
 inline void DrawUiTextCenteredY(FontWeight weight, const std::string& text,
-                                Rectangle rect, float fontSize, Color color) {
-  const Vector2 size = MeasureTextEx(GetFont(weight), text.c_str(), fontSize, 0.f);
+                                Rectangle rect, float fontSize, Color color,
+                                FontSlant slant = FontSlant::Upright) {
+  const Vector2 size =
+    MeasureTextEx(GetFont(weight, slant), text.c_str(), fontSize, 0.f);
   // The glyph box is taller than the cap height, so bias by the difference
   // between the full em box and the measured ascent to sit optically centred.
   const float y = rect.y + (rect.height - size.y) * 0.5f + size.y * 0.18f;
-  DrawTextEx(GetFont(weight), text.c_str(), {rect.x, y}, fontSize, 0.f, color);
+  DrawTextEx(GetFont(weight, slant), text.c_str(), {rect.x, y}, fontSize, 0.f,
+             color);
 }
 
 // Draw text centred both horizontally and vertically inside a rect.
 inline void DrawCenteredText(const char* text, Rectangle rect, float fontSize,
                              Color color,
-                             FontWeight weight = FontWeight::Medium) {
-  const float text_w = MeasureUiText(text, fontSize, weight);
+                             FontWeight weight = FontWeight::Medium,
+                             FontSlant slant = FontSlant::Upright) {
+  const float text_w = MeasureUiText(text, fontSize, weight, slant);
   DrawUiTextCenteredY(weight, text,
                       {rect.x + (rect.width - text_w) * 0.5f, rect.y, text_w,
                        rect.height},
-                      fontSize, color);
+                      fontSize, color, slant);
 }
 
 // Scale a rectangle by ui_scale
@@ -146,18 +158,65 @@ inline bool WasWidgetClicked(const Rectangle& rect, bool input_consumed) {
          CheckCollisionPointRec(GetMousePosition(), rect);
 }
 
-// Draw a Win95-style box
-inline void DrawWin95Box(Rectangle rect, Color fill) {
-  DrawRectangleRec(rect, fill);
-  DrawLine(rect.x, rect.y, rect.x + rect.width, rect.y, WHITE);
-  DrawLine(rect.x, rect.y, rect.x, rect.y + rect.height, WHITE);
-  DrawLine(rect.x, rect.y + rect.height, rect.x + rect.width,
-           rect.y + rect.height, DARKGRAY);
-  DrawLine(rect.x + rect.width, rect.y, rect.x + rect.width,
-           rect.y + rect.height, DARKGRAY);
+// ------------------------------------------------------------
+// Surfaces
+//
+// The app has exactly one surface style: a dark, slightly translucent panel
+// with a hairline accent border. The widget layer and the performance panel
+// share these helpers so the board window is visibly the same material as the
+// readout, rather than two systems that happen to be on screen together.
+//
+// Replaces the previous Windows-95 bevel (white top-left, dark bottom-right,
+// LIGHTGRAY fill). A bevel implies raised physical buttons; a reference canvas
+// is flat and dark, and the bevel read as a foreign element on top of it.
+// ------------------------------------------------------------
+
+/**
+ * Set a colour's alpha from a 0..255 value.
+ *
+ * raylib's Fade() takes a 0..1 fraction, and for an already-opaque colour it
+ * returns the colour unchanged: 255 - (255 - 255) * a == 255. Every alpha in
+ * this layer is written 0..255, so Fade(node_label, 20) was not an 8% tint but
+ * solid opaque white -- the reason a widget hover painted a white block. Reach
+ * for this helper; keep Fade for genuine 0..1 fractions.
+ */
+inline Color WithAlpha(Color color, unsigned char alpha) {
+  color.a = alpha;
+  return color;
 }
 
-inline void DrawWin95Scrollbar(components::UIWindowComponent& win) {
+/** Panel background and border, matching systems/perf_panel.h. */
+inline void DrawPanelSurface(Rectangle rect) {
+  DrawRectangleRec(rect, WithAlpha(theme::window_background, 242));
+  DrawRectangleLinesEx(rect, 1.f, WithAlpha(theme::selection_outline, 60));
+}
+
+/** A hairline separator, used under titles and between group rows. */
+inline void DrawHairline(float x0, float y, float x1) {
+  DrawLine(x0, y, x1, y, WithAlpha(theme::node_label, 28));
+}
+
+/**
+ * Interactive control surface: checkbox box, button, dropdown field, slider
+ * track. Resting controls are the same dark as the panel with a hairline
+ * outline, so they read as holes cut into the window rather than lighter
+ * patches on top of it. Hover lifts the fill a little -- a lighter *dark*, not a
+ * white flash, so the control still belongs to the panel -- and `active`
+ * (checked / pressed) tints toward the accent.
+ */
+inline void DrawWidgetSurface(Rectangle rect, bool hovered = false,
+                              bool active = false) {
+  const Color fill = active    ? WithAlpha(theme::selection_outline, 80)
+                     : hovered ? WithAlpha(theme::node_label, 20)
+                               : theme::board_background;
+  const Color border = (active || hovered)
+                         ? WithAlpha(theme::selection_outline, 180)
+                         : WithAlpha(theme::node_label, 70);
+  DrawRectangleRec(rect, fill);
+  DrawRectangleLinesEx(rect, 1.f, border);
+}
+
+inline void DrawPanelScrollbar(components::UIWindowComponent& win) {
   if (win.auto_height || win.content_height <= (win.height - kTitleBarHeight))
     return;
 
@@ -178,14 +237,10 @@ inline void DrawWin95Scrollbar(components::UIWindowComponent& win) {
   Rectangle track_scaled = ScaleRect(track_rect);
   Rectangle thumb_scaled = ScaleRect(thumb_rect);
 
-  DrawRectangleRec(track_scaled, Color{223, 223, 223, 255});
-
-  DrawLine(track_scaled.x, track_scaled.y, track_scaled.x,
-           track_scaled.y + track_scaled.height, DARKGRAY);
-  DrawLine(track_scaled.x, track_scaled.y, track_scaled.x + track_scaled.width,
-           track_scaled.y, DARKGRAY);
-
-  DrawWin95Box(thumb_scaled, LIGHTGRAY);
+  // Dark track, accent-tinted thumb: a scrollbar is a control, so it uses the
+  // same two colours as every other control.
+  DrawRectangleRec(track_scaled, WithAlpha(theme::node_label, 10));
+  DrawRectangleRec(thumb_scaled, WithAlpha(theme::selection_outline, 120));
 }
 
 // Resolve intrinsic width for UI components

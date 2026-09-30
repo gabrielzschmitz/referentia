@@ -33,7 +33,8 @@ struct RowItem {
 
 inline void FlushRow(std::vector<RowItem>& row, float content_width,
                      float content_left, float& cursor_y, float gap_spacing,
-                     bool add_gap = true, bool left_align = false) {
+                     bool add_gap = true,
+                     UIGroupAlign align = UIGroupAlign::Center) {
   if (row.empty()) return;
 
   float row_height = 0.f;
@@ -47,9 +48,17 @@ inline void FlushRow(std::vector<RowItem>& row, float content_width,
   float total_gap =
     (row.size() > 1) ? gap_spacing * float(row.size() - 1) : 0.f;
 
-  float x = left_align ? content_left
-                       : content_left +
-                           (content_width - (total_width + total_gap)) * 0.5f;
+  const float used = total_width + total_gap;
+  // Clamped because a row can be wider than the content when a caller puts two
+  // full-width children together; centring an over-wide row would start it off
+  // the left edge of the window.
+  const float slack = std::fmax(0.f, content_width - used);
+  float x = content_left;
+  if (align == UIGroupAlign::Center) {
+    x += slack * 0.5f;
+  } else if (align == UIGroupAlign::Right) {
+    x += slack;
+  }
 
   for (auto& item : row) {
     item.rect->rect = {x, cursor_y, item.width, item.layout->preferred_height};
@@ -67,7 +76,8 @@ inline void PlaceRowItem(ECS& ecs, Entity child,
                          UIResolvedRectComponent& child_rect,
                          std::vector<RowItem>& row, float content_left,
                          float content_width, float spacing,
-                         float& cursor_y) {
+                         float& cursor_y,
+                         UIGroupAlign align = UIGroupAlign::Center) {
   float width = layout.preferred_width;
   bool full_row = ecs.has<UISliderComponent>(child) || width == -1.f;
 
@@ -85,7 +95,7 @@ inline void PlaceRowItem(ECS& ecs, Entity child,
   float next_row_width = row_width + width + (row.empty() ? 0.f : spacing);
 
   if (full_row || next_row_width > content_width)
-    FlushRow(row, content_width, content_left, cursor_y, spacing);
+    FlushRow(row, content_width, content_left, cursor_y, spacing, true, align);
 
   row.push_back(RowItem{&layout, &child_rect, width});
 }
@@ -112,17 +122,32 @@ inline void LayoutGroup(ECS& ecs, Entity group, UIGroupComponent& g,
 
       if (ecs.has<UINewLineComponent>(child)) {
         FlushRow(group_row, inner_content_width, inner_content_left,
-                 group_cursor_y, g.spacing);
+                 group_cursor_y, g.spacing, true, g.align);
         return;
       }
 
       PlaceRowItem(ecs, child, layout, child_rect, group_row,
                    inner_content_left, inner_content_width, g.spacing,
-                   group_cursor_y);
+                   group_cursor_y, g.align);
+
+      // One per line: close the row straight after placing the child, so the
+      // next one cannot join it. Done here rather than by refusing to pack, so
+      // the spacing and the row height still come from the one FlushRow.
+      if (g.one_per_line) {
+        FlushRow(group_row, inner_content_width, inner_content_left,
+                 group_cursor_y, g.spacing, true, g.align);
+      }
     });
 
   FlushRow(group_row, inner_content_width, inner_content_left, group_cursor_y,
-           g.spacing, false);
+           g.spacing, false, g.align);
+
+  // one_per_line closes every row inside the loop, and a row closed there carries
+  // its trailing gap, so the last one leaves kRowGap of dead space below the
+  // final row. padding_bottom already accounts for the air under the content;
+  // leaving the gap in made a stacked group's bottom margin twice its top.
+  if (g.one_per_line && group_cursor_y > group_start_y)
+    group_cursor_y -= g.spacing;
 
   float group_height = group_cursor_y - group_start_y;
 
@@ -147,15 +172,17 @@ inline void LayoutStandaloneChildren(ECS& ecs, Entity window_entity,
       if (ecs.has<UIGroupComponent>(child)) return;
 
       if (ecs.has<UINewLineComponent>(child)) {
-        FlushRow(row, content_width, content_left, cursor_y, window.gap);
+        FlushRow(row, content_width, content_left, cursor_y, kRowGap, true,
+                 UIGroupAlign::Left);
         return;
       }
 
       PlaceRowItem(ecs, child, layout, child_rect, row, content_left,
-                   content_width, window.gap, cursor_y);
+                   content_width, kRowGap, cursor_y, UIGroupAlign::Left);
     });
 
-  FlushRow(row, content_width, content_left, cursor_y, window.gap, false, true);
+  FlushRow(row, content_width, content_left, cursor_y, kRowGap, false,
+           UIGroupAlign::Left);
 }
 
 inline void LayoutUI(ECS& ecs) {
@@ -167,7 +194,7 @@ inline void LayoutUI(ECS& ecs) {
                          (window.content_height >
                           (window.height - kTitleBarHeight));
 
-    float start_y = window.position.y + window.padding / 2 + kTitleBarHeight;
+    float start_y = window.position.y + kRowGap + kTitleBarHeight;
     float cursor_y = start_y;
     float content_left = window.position.x + window.padding;
     float content_width = window.width - 2.f * window.padding;
@@ -199,13 +226,13 @@ inline void LayoutUI(ECS& ecs) {
         current_group_idx++;
 
         if (current_group_idx < group_count || has_standalone_children) {
-          cursor_y += window.gap;
+          cursor_y += kRowGap;
         }
       });
 
     LayoutStandaloneChildren(ecs, window_entity, content_left, content_width,
                              cursor_y, window);
-    window.content_height = cursor_y - start_y + window.padding;
+    window.content_height = cursor_y - start_y + kRowGap;
 
     if (window.auto_height)
       window.height = cursor_y - window.position.y + window.padding;
@@ -295,15 +322,17 @@ inline void RenderGroups(ECS& ecs, Entity window_entity, float scroll_y) {
 
     Rectangle r = ScrolledResolvedRect(rect, scroll_y);
 
-    DrawRectangleLinesEx(r, 1.f, DARKGRAY);
-
-    if (g.separator)
-      DrawLine(r.x, r.y + 18 * ui_scale, r.x + r.width, r.y + 18 * ui_scale,
-               GRAY);
+    // A faint frame, not a boxed section: a full border on every group made the
+    // panel read as a form. The grouping is carried by the title and the rule.
+    DrawRectangleLinesEx(r, 1.f, WithAlpha(theme::node_label, 20));
 
     if (!g.title.empty())
-      DrawUiText(FontWeight::Medium, g.title,
-                 {r.x + 4 * ui_scale, r.y + 2 * ui_scale}, 12.f, BLACK);
+      DrawUiText(FontWeight::Bold, g.title,
+                 {r.x + 4 * ui_scale, r.y + 3 * ui_scale}, 14.f,
+                 theme::node_label_dim);
+
+    if (g.separator)
+      DrawHairline(r.x, r.y + kGroupRuleOffset * ui_scale, r.x + r.width);
   });
 }
 
@@ -328,17 +357,23 @@ inline void RenderSliders(ECS& ecs, Entity window_entity, float scroll_y,
     char label_buf[256];
     snprintf(label_buf, sizeof(label_buf), "%s: %.*f", slider.label.c_str(),
              decimal_places, current_val);
-    DrawUiText(std::string(label_buf), {rect.x, rect.y}, kBaseFontSize, BLACK);
+    DrawUiText(std::string(label_buf), {rect.x, rect.y}, kBaseFontSize,
+               theme::node_label);
 
-    DrawRectangleRec(bar, {223, 223, 223, 255});
-    DrawRectangleLinesEx(bar, 1 * ui_scale, BLACK);
+    // Track, filled portion, then the knob on top. The fill is the same accent
+    // as a checked checkbox, so "this much of the range is selected" reads the
+    // same way everywhere.
+    DrawWidgetSurface(bar);
 
     float t = (current_val - slider.min) / (slider.max - slider.min);
+    Rectangle filled{bar.x, bar.y, bar.width * t, bar.height};
+    DrawRectangleRec(filled, WithAlpha(theme::selection_outline, 120));
+
     float knob_x = bar.x + t * bar.width;
     Rectangle knob{knob_x - 4 * ui_scale, bar.y - 2 * ui_scale, 8 * ui_scale,
                    bar.height + 4 * ui_scale};
 
-    DrawWin95Box(knob, LIGHTGRAY);
+    DrawRectangleRec(knob, theme::selection_outline);
 
     bool hit =
       WasWidgetClicked(bar, input_consumed) ||
@@ -373,6 +408,9 @@ inline void RenderCheckboxes(ECS& ecs, Entity window_entity, float scroll_y,
 
       Rectangle rect = ScrolledResolvedRect(resolved, scroll_y);
 
+      const bool hovered = CheckCollisionPointRec(GetMousePosition(), rect);
+      const bool checked = checkbox.get_value && checkbox.get_value();
+
       bool is_full_width = (layout.preferred_width == -1.f);
       float box_size = rect.height - 4.f * ui_scale;
       float text_w = MeasureUiText(checkbox.label, kBaseFontSize);
@@ -383,26 +421,31 @@ inline void RenderCheckboxes(ECS& ecs, Entity window_entity, float scroll_y,
       float text_x = rect.x + box_size + gap;
 
       if (is_full_width) {
-        DrawWin95Box(rect, LIGHTGRAY);
+        // A full-width row highlights as a whole on hover; it has no visible
+        // box of its own, so a per-row hover is the only affordance.
+        if (hovered) DrawRectangleRec(rect, WithAlpha(theme::node_label, 16));
 
         float total_w = box_size + gap + text_w;
         check_x = rect.x + (rect.width - total_w) * 0.5f;
         text_x = check_x + box_size + gap;
-      } else {
-        DrawWin95Box({check_x, box_y, box_size, box_size}, LIGHTGRAY);
       }
 
-      if (checkbox.get_value && checkbox.get_value()) {
-        DrawLine(check_x + box_size * 0.2f, box_y + box_size * 0.5f,
-                 check_x + box_size * 0.45f, box_y + box_size * 0.75f, BLACK);
+      Rectangle box{check_x, box_y, box_size, box_size};
+      DrawWidgetSurface(box, hovered, checked);
 
-        DrawLine(check_x + box_size * 0.45f, box_y + box_size * 0.75f,
-                 check_x + box_size * 0.8f, box_y + box_size * 0.2f, BLACK);
+      if (checked) {
+        const float th = 2.f * ui_scale;
+        DrawLineEx({box.x + box_size * 0.22f, box.y + box_size * 0.52f},
+                   {box.x + box_size * 0.44f, box.y + box_size * 0.74f}, th,
+                   theme::selection_outline);
+        DrawLineEx({box.x + box_size * 0.44f, box.y + box_size * 0.74f},
+                   {box.x + box_size * 0.78f, box.y + box_size * 0.26f}, th,
+                   theme::selection_outline);
       }
 
       DrawUiTextCenteredY(FontWeight::Regular, checkbox.label,
                           {text_x, rect.y, rect.width, rect.height},
-                          kBaseFontSize, BLACK);
+                          kBaseFontSize, theme::node_label);
 
       if (WasWidgetClicked(rect, input_consumed)) {
         bool new_value = !(checkbox.get_value && checkbox.get_value());
@@ -422,8 +465,10 @@ inline void RenderButtons(ECS& ecs, Entity window_entity, float scroll_y,
 
     Rectangle rect = ScrolledResolvedRect(resolved, scroll_y);
 
-    DrawWin95Box(rect, LIGHTGRAY);
-    DrawCenteredText(button.label.c_str(), rect, kBaseFontSize, BLACK);
+    const bool hovered = CheckCollisionPointRec(GetMousePosition(), rect);
+    DrawWidgetSurface(rect, hovered);
+    DrawCenteredText(button.label.c_str(), rect, kBaseFontSize,
+                     hovered ? theme::selection_outline : theme::node_label);
 
     if (WasWidgetClicked(rect, input_consumed))
       if (button.on_click) button.on_click();
@@ -440,7 +485,7 @@ inline void RenderText(ECS& ecs, Entity window_entity, float scroll_y) {
     Rectangle rect = ScrolledResolvedRect(resolved, scroll_y);
 
     DrawUiTextCenteredY(FontWeight::Regular, text.text, rect, kBaseFontSize,
-                        BLACK);
+                        theme::node_label);
   });
 }
 
@@ -454,13 +499,14 @@ inline void RenderDropdowns(ECS& ecs, Entity window_entity, float scroll_y,
 
       Rectangle rect = ScrolledResolvedRect(resolved, scroll_y);
 
-      DrawWin95Box(rect, LIGHTGRAY);
+      const bool hovered = CheckCollisionPointRec(GetMousePosition(), rect);
+      DrawWidgetSurface(rect, hovered);
 
       float arrow_w = 16.f * ui_scale;
       Rectangle arrow_rect = {rect.x + rect.width - arrow_w, rect.y, arrow_w,
                               rect.height};
-      DrawWin95Box(arrow_rect, LIGHTGRAY);
-      DrawCenteredText("\xE2\x96\xBC", arrow_rect, kBaseFontSize, BLACK);
+      DrawCenteredText("\xE2\x96\xBC", arrow_rect, kBaseFontSize,
+                       theme::selection_outline);
 
       std::string display = dropdown.label + ": ";
       if (dropdown.get_index) {
@@ -471,7 +517,7 @@ inline void RenderDropdowns(ECS& ecs, Entity window_entity, float scroll_y,
       DrawUiTextCenteredY(FontWeight::Regular, display,
                           {rect.x + 4.f * ui_scale, rect.y, rect.width,
                            rect.height},
-                          kBaseFontSize, BLACK);
+                          kBaseFontSize, theme::node_label);
 
       if (WasWidgetClicked(rect, input_consumed)) {
         dropdown.expanded = !dropdown.expanded;
@@ -498,12 +544,14 @@ inline void RenderDropdownLists(ECS& ecs, Entity window_entity, float scroll_y,
 
       bool hover = CheckCollisionPointRec(GetMousePosition(), option_rect);
 
-      DrawWin95Box(option_rect, hover ? Color{225, 225, 225, 255} : LIGHTGRAY);
+      DrawRectangleRec(option_rect, hover ? WithAlpha(theme::selection_outline, 70)
+                                          : WithAlpha(theme::window_background, 245));
+      DrawRectangleLinesEx(option_rect, 1.f, WithAlpha(theme::selection_outline, 50));
 
       DrawUiTextCenteredY(FontWeight::Regular, dropdown.options[i],
                           {option_rect.x + 4 * ui_scale, option_rect.y,
                            option_rect.width, option_rect.height},
-                          kBaseFontSize, BLACK);
+                          kBaseFontSize, theme::node_label);
     }
   });
 }
@@ -579,9 +627,16 @@ inline void RenderTooltips(ECS& ecs, float scroll_y, bool input_consumed) {
     });
 
   if (!tooltip_to_draw.empty()) {
-    // Size in screen space, so measure at the already-scaled size.
+    // Italic: a tooltip is an aside rather than a control, and the slant marks
+    // it as quoted metadata so it does not compete with the label it describes.
+    // The width is measured with the same face it is drawn in -- the italic
+    // run is a different width, and sizing the box with the upright face
+    // clips the last glyph.
     const float fontSize = kBaseFontSize * ui_scale;
-    const float tipWidth = MeasureUiText(tooltip_to_draw, fontSize) + 10 * ui_scale;
+    const float tipWidth =
+      MeasureUiText(tooltip_to_draw, fontSize, FontWeight::Regular,
+                    FontSlant::Italic) +
+      10 * ui_scale;
     const float tipHeight = fontSize + 8 * ui_scale;
 
     // Flip the tooltip inwards when it would leave the window, so it stays
@@ -603,12 +658,12 @@ inline void RenderTooltips(ECS& ecs, float scroll_y, bool input_consumed) {
 
     const Rectangle tipRect{tipX, tipY, tipWidth, tipHeight};
 
-    DrawRectangleRec(tipRect, {255, 255, 225, 255});
-    DrawRectangleLinesEx(tipRect, 1, BLACK);
+    DrawRectangleRec(tipRect, WithAlpha(theme::window_background, 248));
+    DrawRectangleLinesEx(tipRect, 1.f, WithAlpha(theme::selection_outline, 90));
     DrawUiTextCenteredY(FontWeight::Regular, tooltip_to_draw,
                         {tipRect.x + 5 * ui_scale, tipRect.y, tipRect.width,
                          tipRect.height},
-                        fontSize, BLACK);
+                        fontSize, theme::node_label, FontSlant::Italic);
   }
 }
 
@@ -636,18 +691,23 @@ inline void RenderWindow(ECS& ecs, bool& input_consumed,
 
   ecs.group_view<UIWindowComponent>([&](Entity e, UIWindowComponent& window) {
     if (window.minimized) {
-      float btn_size = 24.f * ui_scale;
-      float btn_x = GetScreenWidth() - btn_size - (10.f * ui_scale);
-      float btn_y = 10.f * ui_scale;
+      // Hidden windows park as a small tab in the bottom-right of the screen.
+      // It used to sit top-right, where it fought the frame-rate panel for the
+      // same corner and read as a second readout rather than a way back.
+      float btn_size = kTitleBarHeight * ui_scale;
+      float margin = 12.f * ui_scale;
+      float btn_x = GetScreenWidth() - btn_size - margin;
+      float btn_y = GetScreenHeight() - btn_size - margin;
       Rectangle restore_btn{btn_x, btn_y, btn_size, btn_size};
 
-      DrawWin95Box(restore_btn, LIGHTGRAY);
+      DrawWidgetSurface(restore_btn, CheckCollisionPointRec(mouse, restore_btn));
 
-      float margin = 6.f * ui_scale;
-      Rectangle inner_rect{restore_btn.x + margin, restore_btn.y + margin,
-                           restore_btn.width - (margin * 2),
-                           restore_btn.height - (margin * 2)};
-      DrawRectangleLinesEx(inner_rect, 1.f * ui_scale, BLACK);
+      float inset = 9.f * ui_scale;
+      Rectangle inner_rect{restore_btn.x + inset, restore_btn.y + inset,
+                           restore_btn.width - (inset * 2),
+                           restore_btn.height - (inset * 2)};
+      DrawRectangleLinesEx(inner_rect, 1.f * ui_scale,
+                           theme::selection_outline);
 
       if (WasWidgetClicked(restore_btn, input_consumed)) {
         window.minimized = false;
@@ -665,7 +725,7 @@ inline void RenderWindow(ECS& ecs, bool& input_consumed,
       {window.position.x, window.position.y, window.width, window.height});
     bool mouse_over_window = CheckCollisionPointRec(mouse, rect);
 
-    const float title_h = 24.f * ui_scale;
+    const float title_h = kTitleBarHeight * ui_scale;
     Rectangle close_button{rect.x + rect.width - title_h, rect.y, title_h,
                            title_h};
     Rectangle minimize_button{rect.x + rect.width - (title_h * 2), rect.y,
@@ -695,16 +755,24 @@ inline void RenderWindow(ECS& ecs, bool& input_consumed,
       window.layout_dirty = true;
     }
 
-    DrawWin95Box(rect, LIGHTGRAY);
-    DrawRectangleRec(title_bar, {0, 0, 128, 255});
-    DrawUiText(FontWeight::SemiBold, window.title,
-               {rect.x + 6 * ui_scale, rect.y + 4 * ui_scale}, 13.f, WHITE);
+    const bool min_hover = CheckCollisionPointRec(mouse, minimize_button);
+    const bool close_hover = CheckCollisionPointRec(mouse, close_button);
 
-    DrawWin95Box(minimize_button, LIGHTGRAY);
-    DrawCenteredText("-", minimize_button, kBaseFontSize, BLACK);
+    DrawPanelSurface(rect);
+    // The title is separated by a hairline rather than a filled bar: a solid
+    // bar in a second colour was the loudest thing on an otherwise flat panel.
+    DrawHairline(rect.x, rect.y + title_h_scaled, rect.x + rect.width);
+    DrawUiText(FontWeight::Bold, window.title,
+               {rect.x + 10 * ui_scale, rect.y + 8 * ui_scale}, 18.f,
+               theme::node_label);
 
-    DrawWin95Box(close_button, LIGHTGRAY);
-    DrawCenteredText("\xC3\x97", close_button, kBaseFontSize, BLACK);
+    DrawWidgetSurface(minimize_button, min_hover);
+    DrawCenteredText("-", minimize_button, kCaptionFontSize,
+                     min_hover ? theme::selection_outline : theme::node_label_dim);
+
+    DrawWidgetSurface(close_button, close_hover);
+    DrawCenteredText("\xC3\x97", close_button, kCaptionFontSize,
+                     close_hover ? theme::selection_outline : theme::node_label_dim);
 
     if (window.close_requested) {
       std::vector<Entity> to_destroy;
@@ -733,7 +801,7 @@ inline void RenderWindow(ECS& ecs, bool& input_consumed,
     }
 
     if (mouse_over_window) HandleWindowScrolling(ecs, window);
-    DrawWin95Scrollbar(window);
+    DrawPanelScrollbar(window);
 
     bool has_scrollbar =
       (window.content_height > (window.height - kTitleBarHeight));

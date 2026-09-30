@@ -28,6 +28,7 @@
 #include "components/camera.h"
 #include "engine/globals.h"
 #include "raylib.h"
+#include "systems/ui_helpers.h"
 
 namespace referentia::systems {
 
@@ -172,7 +173,7 @@ inline void DrawBoardDebugHud(const Camera2D& cam,
     view.height, mine.x, mine.y, board::GridSpacing(cam.zoom),
     board::WorldToPixels(board::GridSpacing(cam.zoom), cam.zoom), drift);
 
-  const float size = kHudFontSize * ui_scale;
+  const float size = kHudFontSize * ui_scale * 0.75;
   const float spacing = kHudLineGap * ui_scale;
   const Vector2 text_size =
     MeasureTextEx(GetFont(FontWeight::Regular), text.c_str(), size, spacing);
@@ -180,8 +181,9 @@ inline void DrawBoardDebugHud(const Camera2D& cam,
                         text_size.x + 14.f * ui_scale,
                         text_size.y + 14.f * ui_scale};
 
-  DrawRectangleRec(panel, Fade(BLACK, 0.75f));
-  DrawRectangleLinesEx(panel, 1.f, Fade(WHITE, 0.24f));
+  DrawRectangleRec(panel, WithAlpha(theme::window_background, 235));
+  DrawRectangleLinesEx(panel, 1.f, WithAlpha(theme::selection_outline, 70));
+
   // Drift beyond a pixel means the analytic model no longer matches the
   // renderer, so the readout is flagged rather than quietly wrong.
   DrawTextEx(GetFont(FontWeight::Regular), text.c_str(),

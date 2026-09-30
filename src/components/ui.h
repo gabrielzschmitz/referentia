@@ -19,6 +19,38 @@ using ::motrix::engine::ECS;
 using ::motrix::engine::Entity;
 using ::motrix::engine::INVALID_ENTITY;
 
+// ------------------------------------------------------------
+// Panel rhythm
+//
+// One value for every vertical gap in a window: between rows, between groups,
+// and at the window's top and bottom edge. Sizing them independently is what
+// made the Board panel read as loosely packed rather than as a grid -- the
+// defaults were 8 between rows, 12 between groups, 24 under a group title and
+// half the window padding at the top -- so no two gaps matched and a reader
+// could not tell which ones were structural. They live here rather than in
+// systems/ui_helpers.h because the component defaults below are the values
+// that have to agree with them, and components cannot depend on a system.
+// A group's own top and bottom padding is deliberately not this: it is the
+// title band, and it is the space between a row and the frame around it.
+// ------------------------------------------------------------
+
+/** The gap. Rows, groups and window edges all sit on this pitch. */
+constexpr float kRowGap = 12.f;
+
+/**
+ * From a group's top edge to the rule under its title. The one fixed-height
+ * step, because it has to clear the title text; the group's first row then
+ * sits kRowGap below the rule like every other row.
+ */
+constexpr float kGroupRuleOffset = 20.f;
+
+/**
+ * Row height for a label with no explicit height. Sized to the base font (17)
+ * plus a couple of pixels of air: at the old 20 the glyph box overflowed its own
+ * row, which is why the rows read as touching even with a gap between them.
+ */
+constexpr float kRowHeight = 24.f;
+
 struct UIWindowComponent {
   static constexpr std::string_view Name = "UIWindow";
 
@@ -27,7 +59,7 @@ struct UIWindowComponent {
   float height = 0.f;
   bool auto_height = true;
   float padding = 10.f;
-  float gap = 8.f;
+  float gap = kRowGap;
   std::string title;
   bool layout_dirty = true;
   bool dragging = false;
@@ -50,7 +82,7 @@ struct UILayoutChildComponent {
 
   Entity parent{0};
   float preferred_width = -1.f;  // -1 = stretch
-  float preferred_height = 20.f;
+  float preferred_height = kRowHeight;
 
   UILayoutChildComponent(Entity parent_entity = {}, float width = -1.f,
                          float height = 20.f)
@@ -170,19 +202,47 @@ struct UITooltipComponent {
     : text(std::move(t)), delay(d) {}
 };
 
+/**
+ * Where a group's rows sit inside the group frame.
+ *
+ * A row of checkboxes is not a shape to be centred: each row has a different
+ * width, so centring them leaves a ragged left edge and the labels look
+ * staggered. Lists read flush left; a short row of buttons reads better centred.
+ */
+enum class UIGroupAlign {
+  Left,
+  Center,
+  Right,
+};
+
 struct UIGroupComponent {
   static constexpr std::string_view Name = "UIGroup";
 
   std::string title;
   bool separator = true;
-  float padding_top = 24.f;
-  float padding_bottom = 8.f;
+  // Matched to the air above the first row, not to the top padding. The top is
+  // the larger number because the title and its rule sit in it -- what is
+  // actually empty between the rule and the first row is kRowGap, and that is
+  // the frame's inner margin. Copying the top value here instead put 32 of
+  // blank space under the last row against 12 above it, which read as a bottom
+  // margin twice the top.
+  float padding_top = kGroupRuleOffset + kRowGap;
+  float padding_bottom = kRowGap;
   float padding_left = 4.f;
   float padding_right = 4.f;
-  float spacing = 8.f;
+  float spacing = kRowGap;
+  /** Horizontal placement of this group's rows. */
+  UIGroupAlign align = UIGroupAlign::Center;
+  /**
+   * Give every child its own row instead of packing them side by side. For
+   * groups of checkboxes, where one row per control is what the eye expects and
+   * packing them two to a line halves the room for each label.
+   */
+  bool one_per_line = false;
 
-  UIGroupComponent(std::string t = {}, bool sep = true)
-    : title(std::move(t)), separator(sep) {}
+  UIGroupComponent(std::string t = {}, bool sep = true,
+                   UIGroupAlign a = UIGroupAlign::Center, bool one = false)
+    : title(std::move(t)), separator(sep), align(a), one_per_line(one) {}
 };
 
 struct UIGroupChildComponent {

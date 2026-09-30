@@ -73,12 +73,15 @@ inline engine::Entity AddWindow(engine::ECS& ecs, Vector2 position, float width,
 }
 
 inline engine::Entity AddGroup(engine::ECS& ecs, engine::Entity window,
-                               const std::string& title) {
+                               const std::string& title,
+                               ec::UIGroupAlign align = ec::UIGroupAlign::Center,
+                               bool one_per_line = false) {
   engine::Entity group = ecs.create_entity("ui-group");
   ecs.add<ec::UILayoutChildComponent>(
     group, ec::UILayoutChildComponent{window, -1.f, 0.f});
   ecs.add<ec::UIResolvedRectComponent>(group);
-  ecs.add<ec::UIGroupComponent>(group, ec::UIGroupComponent{title, true});
+  ecs.add<ec::UIGroupComponent>(
+    group, ec::UIGroupComponent{title, true, align, one_per_line});
   return group;
 }
 
@@ -94,7 +97,7 @@ inline engine::Entity AddWidget(engine::ECS& ecs, engine::Entity parent,
 inline void AddText(engine::ECS& ecs, engine::Entity window,
                     engine::Entity group, const std::string& text,
                     const std::string& tooltip = {}, float width = 0.f,
-                    float height = 20.f) {
+                    float height = ec::kRowHeight) {
   engine::Entity e = AddWidget(ecs, window, width, height);
   ecs.add<ec::UITextComponent>(e, ec::UITextComponent(text));
   if (!tooltip.empty()) ecs.add<ec::UITooltipComponent>(e, tooltip);
@@ -124,7 +127,7 @@ inline void AddCheckbox(engine::ECS& ecs, engine::Entity window,
                         std::function<void(bool)> set_value,
                         std::function<void(bool)> on_change = {},
                         const std::string& tooltip = {}, float width = 0.f,
-                        float height = 20.f) {
+                        float height = ec::kRowHeight) {
   engine::Entity e = AddWidget(ecs, window, width, height);
   ecs.add<ec::UICheckboxComponent>(
     e, ec::UICheckboxComponent{label, std::move(get_value),
@@ -138,7 +141,7 @@ inline void AddButton(engine::ECS& ecs, engine::Entity window,
                       engine::Entity group, const std::string& label,
                       std::function<void()> on_click,
                       const std::string& tooltip = {}, float width = 0.f,
-                      float height = 20.f) {
+                      float height = ec::kRowHeight) {
   engine::Entity e = AddWidget(ecs, window, width, height);
   ecs.add<ec::UIButtonComponent>(
     e, ec::UIButtonComponent{label, std::move(on_click)});
@@ -154,7 +157,7 @@ inline void AddDropdown(engine::ECS& ecs, engine::Entity window,
                         std::function<void(int)> set_index,
                         std::function<void(const std::string&)> on_select,
                         const std::string& tooltip = {}, float width = 0.f,
-                        float height = 20.f) {
+                        float height = ec::kRowHeight) {
   engine::Entity e = AddWidget(ecs, window, width, height);
   ecs.add<ec::UIDropdownComponent>(
     e, ec::UIDropdownComponent{label, std::move(options), std::move(get_index),
