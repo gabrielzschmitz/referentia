@@ -6,8 +6,10 @@
 #include <thread>
 
 #include "app/app_state.h"
+#include "app/banner.h"
 #include "app/board.h"
 #include "app/fonts.h"
+#include "app/screenshot.h"
 #include "board/transform.h"
 #include "engine/globals.h"
 #include "engine/logger.h"
@@ -18,9 +20,8 @@
 #include "systems/board_cursor.h"
 #include "systems/board_debug.h"
 #include "systems/camera.h"
+#include "systems/perf_panel.h"
 #include "systems/ui.h"
-
-static bool SHOW_FPS = true;
 
 /**
  * Whether the OS cursor is currently hidden, i.e. whether the board's own
@@ -81,11 +82,10 @@ static void PrintUsage() {
   printf("  Middle-drag           Pan (or Space + left-drag)\n");
   printf("  =                     Reset target to the origin at zoom 1\n");
   printf("  ESC, Q                Quit\n");
-  printf("  F10                   Toggle the UI panel\n");
-  printf("  F11                   Toggle the FPS readout\n");
-  printf("  F3                    Toggle frame-time reporting\n");
-  printf("  F8                    Log frame time (needs F3 on)\n");
-  printf("  F12                   Dump the live ECS (debug builds only)\n");
+  printf("  F10                   Toggle the board panel\n");
+  printf("  F11                   Toggle the frame-rate readout\n");
+  printf("  F8                    Toggle the frame-time graph\n");
+  printf("  F12                   Save a screenshot to screenshots/\n");
 }
 
 // Returns true when the app should exit immediately without starting, i.e.
@@ -195,14 +195,6 @@ static void RenderApp(m_app::AppState& state) {
 
   EndMode2D();
 
-  // The pointer, in screen space and after EndMode2D so the camera transform
-  // does not scale it or let it slide away from the physical mouse. Drawn
-  // whenever the OS cursor is hidden, which is why it sits here rather than in
-  // the world-space board render.
-  if (g_cursor_hidden) {
-    referentia::systems::DrawBoardCursor();
-  }
-
   // TEMPORARY: screen-space verification readout, see systems/board_debug.h.
   // Read from the overlay entity, same as the world-space half, so the two
   // halves cannot disagree about whether the overlay is enabled.
@@ -213,44 +205,43 @@ static void RenderApp(m_app::AppState& state) {
       referentia::systems::DrawBoardDebugHud(cam.camera, cfg);
     });
 
-  // BoardCreateUI is what F10 calls to rebuild the panel after it has been
-  // closed, so the UI system does not need to know what builds the panel.
+  // BoardCreateUI is what F10 calls to build the panel, so the UI system does
+  // not need to know what goes on it.
   referentia::systems::RenderUI(state.ecs, m_app::BoardCreateUI);
 
-  if (IsKeyPressed(KEY_F11)) SHOW_FPS = !SHOW_FPS;
+  if (IsKeyPressed(KEY_F11)) show_fps = !show_fps;
 
-  // F12 dumps the live ECS: every entity, its version and its components. This
-  // is the check that "everything is an entity" is actually true, rather than
-  // something the code only appears to do.
-  if (IsKeyPressed(KEY_F12)) {
-    state.ecs.print_entities(logger::Level::Debug,
-                             {"TagCamera", "TagWorldRoot"});
+  // F8 toggles the frame-time graph on its own, deliberately not as a sub-toggle
+  // of F11. Gating it behind the readout meant F8 did nothing unless the readout
+  // happened to be on, which is indistinguishable from a broken key.
+  if (IsKeyPressed(KEY_F8)) {
+    show_frame_graph = !show_frame_graph;
+    if (show_frame_graph) g_frame_history.Clear();
+    LOG_DEBUG("[APP] frame graph {}", show_frame_graph ? "on" : "off");
   }
 
-  if (SHOW_FPS) {
-    // Top-right, right-aligned by measuring: the debug readout owns the
-    // top-left corner, and a fixed origin here would sit underneath it.
-    // Actual/cap is shown so a V-Sync failure is obvious: the two numbers
-    // should match whatever the panel refreshes at.
-    std::string fps_text = TextFormat("FPS: %d", GetFPS());
-    if (display_refresh_rate > 0) {
-      fps_text += TextFormat(" / %d", display_refresh_rate);
-    }
+  // Readout and graph are separate toggles but one panel, drawn top-right: the
+  // graph sits directly under the frame rate so the two readings describe the
+  // same moment. g_graph_ceiling is the graph's smoothed vertical scale, owned
+  // here so it survives between frames.
+  referentia::systems::DrawPerfPanel(g_frame_history, display_refresh_rate,
+                                     show_fps, show_frame_graph,
+                                     g_graph_ceiling);
 
-    const float size = 18.f * ui_scale;
-    const float spacing = 1.f * ui_scale;
-    const Vector2 measured =
-      MeasureTextEx(m_font::GetFont(m_font::FontWeight::SemiBold),
-                    fps_text.c_str(), size, spacing);
-    const float margin = 12.f * ui_scale;
+  // The pointer is the last thing drawn, on top of the board, the HUD, the
+  // board panel and the perf panel. Drawn earlier it disappeared whenever it
+  // crossed a widget, which is exactly when the user is aiming at one. Screen
+  // space, after EndMode2D, so it neither scales with the camera nor slides away
+  // from the physical mouse.
+  if (g_cursor_hidden) referentia::systems::DrawBoardCursor();
 
-    const Rectangle panel{
-      static_cast<float>(GetScreenWidth()) - measured.x - margin * 2.f, margin,
-      measured.x + margin * 2.f, measured.y + margin};
-    DrawTextEx(m_font::GetFont(m_font::FontWeight::SemiBold), fps_text.c_str(),
-               {panel.x + margin, panel.y + margin * 0.5f}, size, spacing,
-               theme::selection_outline);
-  }
+  // F12 captures the framebuffer. Last, so the screenshot contains the whole
+  // frame -- overlays, panels and the pointer -- rather than whatever had been
+  // drawn at the point the key handler happened to sit. The panel's Screenshot
+  // button queues the same request from inside the widget pass and is served
+  // here, so both paths write the same complete frame.
+  if (IsKeyPressed(KEY_F12)) referentia::app::RequestScreenshot();
+  referentia::app::FlushScreenshotRequest();
 
   EndDrawing();
 }
@@ -269,21 +260,21 @@ int RunApp(int argc, char** argv) {
   logger::info("[APP] Board ready, ECS holds {} entities",
                state.ecs.live_entity_count());
 
-  // Frame-time reporting is off by default. Debug builds now run at the
-  // display's refresh rate, so a frame-counted interval meant twice a second
-  // on a 240Hz panel: a wall of text for information nobody asked for.
-  //
-  // F3 toggles it. While on, one line per press; a single long frame is always
-  // worth a line on its own, since that is a real stall rather than noise.
+  // A stall is reported to the log whatever the graph is doing: one line is
+  // cheap, and a real 50ms hitch is a fact about the run rather than a trend
+  // you opted into seeing.
   constexpr int kHitchReportMs = 50;
 
-  bool report_frame_time = false;
   bool request_quit = false;
-  double window_ms = 0.0;
-  long window_frames = 0;
 
   while (!WindowShouldClose() && !request_quit) {
     const float dt = GetFrameTime();
+
+    // Recorded every frame, graph or no graph, so F8 shows the seconds leading
+    // up to the press instead of starting from an empty panel. dt is read at
+    // the top of the frame, which is the interval since the previous one and so
+    // already accounts for everything the last iteration did.
+    g_frame_history.Push(dt * 1000.f);
 
     // Before update and render, so the frame's pointer state is already
     // consistent: input handling must not run against a stale cursor state, and
@@ -301,33 +292,6 @@ int RunApp(int argc, char** argv) {
       request_quit = true;
     }
 
-    if (IsKeyPressed(KEY_F3)) {
-      report_frame_time = !report_frame_time;
-      window_ms = 0.0;
-      window_frames = 0;
-      LOG_DEBUG("[APP] Frame-time reporting {}",
-                report_frame_time ? "on" : "off");
-    }
-
-    if (report_frame_time) {
-      window_ms += dt * 1000.0;
-      ++window_frames;
-
-      if (IsKeyPressed(KEY_F8)) {
-        if (window_frames > 0) {
-          const double avg = window_ms / window_frames;
-          LOG_DEBUG("[APP] {} ms/frame over {} frames ({} FPS), window {}x{}",
-                    logger::detail::fixed(avg, 2), window_frames,
-                    logger::detail::fixed(1000.0 / avg, 0), GetScreenWidth(),
-                    GetScreenHeight());
-        }
-        window_ms = 0.0;
-        window_frames = 0;
-      }
-    }
-
-    // A long frame is reported regardless of the toggle: it is a stall, not a
-    // trend, and it is the thing worth noticing while developing.
     if (dt * 1000.0 > kHitchReportMs) {
       LOG_DEBUG("[APP] frame took {} ms (vsync is {} Hz)",
                 logger::detail::fixed(dt * 1000.0, 1), display_refresh_rate);
@@ -358,6 +322,11 @@ int RunApp(int argc, char** argv) {
   CloseWindow();
 
   logger::info("[APP] Exited cleanly");
+
+  // Bookend the run with the same mark build.sh prints at the top, so a launch
+  // in a scrollback is visibly closed rather than trailing off. After CloseWindow
+  // so it lands in the terminal once the window is gone.
+  m_app::PrintBanner();
 
   return 0;
 }
