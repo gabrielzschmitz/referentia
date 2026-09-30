@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <link rel="icon" type="image/png" href="icon.png" />
+
+  <title>Referentia</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap");
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    /* Full page background and center canvas */
+    body,
+    html {
+      height: 100%;
+      width: 100%;
+      background: #16171a;
+      font-family: "Work Sans", system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Canvas styling */
+    canvas.emscripten {
+      border: 1px solid #2c2e35;
+      background: #1e1f24;
+      width: 100%;
+      max-width: 1600px;
+      height: auto;
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+  <script type="text/javascript">
+    var progressElement = document.getElementById("progress");
+    var progressFill = document.getElementById("progress-fill");
+    var spinner = document.querySelector(".spinner");
+
+    var Module = {
+      preRun: [],
+      postRun: [],
+      print: (function () {
+        return function (text) {
+          if (arguments.length > 1)
+            text = Array.prototype.slice.call(arguments).join(" ");
+          console.log(text);
+        };
+      })(),
+      printErr: function (text) {
+        if (arguments.length > 1)
+          text = Array.prototype.slice.call(arguments).join(" ");
+        console.error(text);
+      },
+      canvas: (function () {
+        var canvas = document.getElementById("canvas");
+        canvas.addEventListener(
+          "webglcontextlost",
+          function (e) {
+            alert("WebGL context lost. You will need to reload the page.");
+            e.preventDefault();
+          },
+          false,
+        );
+        return canvas;
+      })(),
+      totalDependencies: 0,
+      monitorRunDependencies: function (left) {
+        this.totalDependencies = Math.max(this.totalDependencies, left);
+      },
+    };
+    Module = Module || {};
+    Module.requestFullscreen = () => { };
+    Module.setCanvasSize = () => { };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+
+</html>
