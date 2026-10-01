@@ -302,6 +302,15 @@ static void UpdateApp(m_app::AppState& state, float dt) {
   // conversion uses this frame's transform rather than last frame's.
   referentia::systems::UpdateImageNodes(state.ecs, state.nodeGrab,
                                         TheCamera(state));
+
+  // Animation last, so a GIF dropped this frame is on its first frame before
+  // anything is drawn. GetFrameTime is the delta since the last frame rather
+  // than a difference of two GetTime calls, because the former is what raylib
+  // already measured to draw this frame and cannot disagree with it; a GIF is
+  // precisely the thing where a clock read twice and subtracted can drift away
+  // from the thing it is supposed to stay in step with.
+  referentia::systems::UpdateImageAnimations(
+      state.ecs, static_cast<double>(GetFrameTime()) * 1000.0);
 }
 
 static void RenderApp(m_app::AppState& state) {
