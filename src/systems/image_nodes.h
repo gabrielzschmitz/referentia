@@ -56,8 +56,17 @@ struct NodeGrab {
   /** The dragged node, so only that entity is written to each frame. */
   engine::Entity entity = engine::INVALID_ENTITY;
 
-  /** Which corner is held, for a rotate. Unused for a move. */
+  /** Which corner is held, for a rotate. Unused for a move and a spin. */
   int corner = -1;
+
+  /**
+   * The mouse button the grab is held with.
+   *
+   * Read back every frame to decide whether the drag is still going, so a grab
+   * started with the right button is not ended by the left button being released,
+   * and holding both does not end either one early.
+   */
+  int button = MOUSE_BUTTON_LEFT;
 
   /** Pointer position when the grab began, in world space. */
   board_ns::Vec2 pointer_at_grab{0.f, 0.f};
@@ -82,8 +91,8 @@ struct NodeGrab {
   /**
    * The click waiting for a second one: a completed press on `click_entity`, and
    * where and when it happened. Survives the end of the grab, since the second
-   * click is a separate press that arrives after the first one has been
-   * released -- which is why end() exists next to clear().
+   * click is a separate press after the first grab has already been released --
+   * which is why end() exists next to clear().
    */
   bool click_pending = false;
   double click_time = 0.0;
@@ -106,19 +115,45 @@ struct NodeGrab {
 };
 
 /**
- * Grab radius of a corner handle, in screen pixels.
+ * Radius of a drawn corner handle, in screen pixels.
  *
  * A screen-space size, converted to world units per frame, for the same reason
  * the board cursor is drawn in screen space: a handle sized in world units would
- * be a giant target when zoomed in and an unhittable speck when zoomed out, and
- * the user would have to zoom to a specific level to use the node at all.
+ * be a giant disc when zoomed in and an unhittable speck when zoomed out, and the
+ * user would have to zoom to a specific level to use the node at all.
  *
- * 6px is a step down from the 9px this started at. A 9px radius is an 18px
- * circle, and four of those on a reference image are large enough to read as
- * part of the picture rather than as something to grab. 6px is still a 12px
- * diameter, comfortably over the 7px Material minimum for a pointer target.
+ * 4px is small on purpose. The circles mark which corners can be grabbed, and a
+ * reference board is mostly image: big handles sit on top of the picture the user
+ * is trying to look at, and four of them read as the node's content rather than
+ * as controls. A measured handle is a node feature, and the point of the border
+ * and corners is to say where the image ends.
  */
-constexpr float kHandleRadiusPx = 6.f;
+constexpr float kHandleRadiusPx = 4.f;
+
+/**
+ * Radius of a corner handle as a hit target, in screen pixels.
+ *
+ * Deliberately larger than the drawn circle, so a press within a few pixels of a
+ * handle still grabs it. Shrinking the drawn circle is a decision about what the
+ * board looks like; shrinking the target with it would be a decision about how
+ * hard the node is to work with, and the two do not have to move together. The
+ * gap is invisible -- there is no highlight for a hovered handle to give it away
+ * -- and it keeps the corner usable at 4px.
+ */
+constexpr float kHandlePickRadiusPx = 7.f;
+
+/**
+ * How close the pointer has to be to a spinning node's centre for the spin to
+ * stop, in screen pixels.
+ *
+ * A free rotation is the pointer's angle around the centre, and on the centre
+ * itself that angle does not exist: a hair either side of it differs by half a
+ * turn. So the node holds still while the pointer is inside this radius and picks
+ * up again on the far side, which reads as the node resisting being spun about its
+ * own middle. 3px is a few pixels of slack rather than a dead spot, so the
+ * gesture stays continuous for a pointer swinging in a normal arc.
+ */
+constexpr float kSpinDeadZonePx = 3.f;
 
 /**
  * How long a press has to be followed by a second one to count as a double
@@ -188,6 +223,16 @@ inline bool PointerOverUi(engine::ECS& ecs) {
  * nodes are created in import order and drawn in that same order -- so the most
  * recently imported image is the one on top, which is what a user stacking
  * reference images expects.
+ *
+ * Two buttons, and the split is by intent rather than by convenience. The left
+ * button moves a node and rotates it by its corners, which needs an aim: a corner
+ * is a specific point and the drag has to hold that point. The right button
+ * rotates whatever is under the pointer with no corner held at all, so it needs
+ * none -- press anywhere on the image and swing the pointer around its centre.
+ * That is the gesture for a rough angle, and it is why the handles are drawn as
+ * small marks rather than being the only way to turn anything: they are for
+ * putting a corner on an exact point, and the right button is for turning the
+ * image the rest of the time.
  */
 inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
                              const Camera2D& cam) {
@@ -198,7 +243,9 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
       static_cast<float>(GetScreenHeight()));
 
   if (grab.active()) {
-    const bool pointer_down = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    // The button the grab started on, not always the left one: a spin is held with
+    // the right button, and a release of some other button is not a release of it.
+    const bool pointer_down = IsMouseButtonDown(grab.button);
 
     // A press held past the double-click interval is a drag, not the first half
     // of a double click. Marked here rather than on release, because by release
@@ -231,17 +278,31 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
           transform.rect = board_ns::MoveBy(
               grab.rect_at_grab,
               board_ns::DragDelta(pointer, grab.pointer_at_grab));
-        } else {
+        } else if (grab.mode == board_ns::GrabMode::Rotate) {
           transform.rotation = board_ns::RotationForCornerDrag(
               board_ns::RectCentre(transform.rect), pointer,
               grab.corner_angle_at_grab, grab.rotation_at_grab);
+        } else {
+          // Free rotation. Nothing is written while the pointer is on the centre,
+          // where the swing has no defined angle: the node holds the angle it has
+          // rather than spinning through the undefined gap.
+          const board_ns::Vec2 centre = board_ns::RectCentre(transform.rect);
+          const float dead = board_ns::PixelsToWorld(kSpinDeadZonePx, cam.zoom);
+          const float dx = pointer.x - centre.x;
+          const float dy = pointer.y - centre.y;
+          if (dx * dx + dy * dy > dead * dead) {
+            transform.rotation = board_ns::RotationForFreeDrag(
+                centre, pointer, grab.pointer_at_grab, grab.rotation_at_grab);
+          }
         }
       });
     return;
   }
 
   // No grab in progress. A press over a panel belongs to the panel.
-  if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || PointerOverUi(ecs)) return;
+  const bool left_pressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+  const bool right_pressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
+  if ((!left_pressed && !right_pressed) || PointerOverUi(ecs)) return;
 
   // The body of the topmost node under the pointer, which is what a right press
   // acts on and what a left press falls back to when it caught no handle.
@@ -258,6 +319,29 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
       body_rect = transform.rect;
     });
 
+  // Right press: a free rotation of whatever is under the pointer, no corner
+  // needed. Handles are not consulted, so a right press on a handle of a node
+  // underneath still spins the image the user can actually see -- the same
+  // topmost-wins rule the left press uses for bodies.
+  if (right_pressed) {
+    if (body_entity == engine::INVALID_ENTITY) return;
+    grab.mode = board_ns::GrabMode::Spin;
+    grab.corner = -1;
+    grab.button = MOUSE_BUTTON_RIGHT;
+    grab.entity = body_entity;
+    grab.pointer_at_grab = pointer;
+    grab.rect_at_grab = body_rect;
+    // The node's own rotation, so the press itself turns nothing: the image starts
+    // moving only once the pointer has swung, which is what makes the gesture feel
+    // like grabbing the image and turning it rather than like setting its angle.
+    ecs.view<ec::TagNode, ec::NodeTransform, ec::ImageNodeComponent>(
+      [&](engine::Entity entity, ec::TagNode&, ec::NodeTransform& transform,
+          ec::ImageNodeComponent&) {
+        if (entity == body_entity) grab.rotation_at_grab = transform.rotation;
+      });
+    return;
+  }
+
   // A press consumes the pending click, so a third click starts a new pair instead
   // of straightening the node again off the same record.
   const float since_click = static_cast<float>(GetTime() - grab.click_time);
@@ -270,7 +354,7 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
           kDoubleClickSlopPx * kDoubleClickSlopPx;
   grab.click_pending = false;
 
-  const float pick_radius = board_ns::PixelsToWorld(kHandleRadiusPx, cam.zoom);
+  const float pick_radius = board_ns::PixelsToWorld(kHandlePickRadiusPx, cam.zoom);
 
   // Handles first, across all nodes, so a handle on a node underneath still
   // wins against the body of one drawn on top: a handle is a small target and
@@ -326,6 +410,7 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
   if (best_corner >= 0) {
     grab.mode = board_ns::GrabMode::Rotate;
     grab.corner = best_corner;
+    grab.button = MOUSE_BUTTON_LEFT;
     grab.entity = best_entity;
     grab.pointer_at_grab = pointer;
     grab.rect_at_grab = best_rect;
@@ -348,6 +433,7 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
 
   grab.mode = board_ns::GrabMode::Move;
   grab.corner = -1;
+  grab.button = MOUSE_BUTTON_LEFT;
   grab.entity = body_entity;
   grab.pointer_at_grab = pointer;
   grab.rect_at_grab = body_rect;
