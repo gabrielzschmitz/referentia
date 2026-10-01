@@ -21,20 +21,14 @@
 #include "components/board.h"
 #include "components/tags.h"
 #include "entities/board.h"
+#include "tests/ecs/ecs_count.h"
 #include "engine/ecs/ecs.h"
 
 namespace ec = referentia::components;
 namespace ents = referentia::entities;
 namespace ecs_ns = motrix::engine;
 
-// Counts entities matching a query. Used to assert a factory created exactly
-// one, rather than "at least one", which is what let the original bug through.
-template <typename... Ts>
-inline int CountMatching(ecs_ns::ECS& ecs) {
-  int n = 0;
-  ecs.view<Ts...>([&](ecs_ns::Entity, Ts&...) { ++n; });
-  return n;
-}
+using test_ecs::CountMatching;
 
 // --- the world root is a real, queryable entity ---
 

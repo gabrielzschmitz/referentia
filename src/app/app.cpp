@@ -8,7 +8,9 @@
 #include "app/app_state.h"
 #include "app/banner.h"
 #include "app/board.h"
+#include "app/file_drop_web.h"
 #include "app/fonts.h"
+#include "app/image_import.h"
 #include "app/screenshot.h"
 #include "board/transform.h"
 #include "engine/globals.h"
@@ -74,6 +76,51 @@ namespace m_app = referentia::app;
 namespace m_eng = motrix::engine;
 namespace m_font = referentia;
 
+/** Viewport size in pixels, as the float pair the transform helpers take. */
+static float ViewportW() { return static_cast<float>(GetScreenWidth()); }
+static float ViewportH() { return static_cast<float>(GetScreenHeight()); }
+
+/**
+ * The one camera's transform, read from ECS.
+ *
+ * Four one-line accessors rather than a struct-returning one because the callers
+ * each need one field at a conversion site, and returning the whole Camera2D
+ * would invite a caller to read cam.camera from it and then bypass the ECS the
+ * rest of the frame uses.
+ */
+static const Camera2D& TheCamera(const m_app::AppState& state) {
+  // ecs.get() is non-const because a mutable component reference is what it
+  // returns, so the const state is copied out of the lookup rather than
+  // const_cast. These are read-only helpers and the camera is not written here.
+  return const_cast<m_app::AppState&>(state)
+      .ecs.get<referentia::components::CameraComponent>(state.cameraEntity)
+      .camera;
+}
+
+static float CameraTargetX(const m_app::AppState& state) {
+  return TheCamera(state).target.x;
+}
+static float CameraTargetY(const m_app::AppState& state) {
+  return TheCamera(state).target.y;
+}
+static float CameraZoom(const m_app::AppState& state) {
+  return TheCamera(state).zoom;
+}
+
+/**
+ * Where a file chosen from the dialog lands: the centre of the viewport.
+ *
+ * A dialog has no pointer position to convert, and the middle of what the user
+ * is looking at is the only answer that puts the image somewhere they will see
+ * it. The camera target itself would be the same point, but going through
+ * ScreenToWorldCentre keeps this honest if the mapping ever changes.
+ */
+static referentia::board::Vec2 DialogAnchor(const m_app::AppState& state) {
+  return referentia::board::ScreenToWorldCentre(
+      ViewportW() * 0.5f, ViewportH() * 0.5f, CameraTargetX(state),
+      CameraTargetY(state), CameraZoom(state), ViewportW(), ViewportH());
+}
+
 static void PrintUsage() {
   printf("Usage: referentia [OPTIONS]\n");
   printf("  -h,  --help           Show this help message\n");
@@ -86,6 +133,26 @@ static void PrintUsage() {
   printf("  F11                   Toggle the frame-rate readout\n");
   printf("  F8                    Toggle the frame-time graph\n");
   printf("  F12                   Save a screenshot to screenshots/\n");
+  printf("\nImport:\n");
+#if defined(PLATFORM_WEB)
+  printf("  Drop on canvas        Place image nodes on the board\n");
+  printf("  Open image... button  Same, via the browser's file chooser\n");
+#else
+  if (referentia::app::kFileDropSupported) {
+    printf("  Drop on window        Place image nodes on the board\n");
+    printf("  Open image... button  Same, via a native file chooser\n");
+  } else {
+    // Named explicitly rather than left out. A build that silently has no drag
+    // and drop looks identical to one where the feature is broken.
+    printf("  Open image... button  Place image nodes on the board\n");
+    printf("                       (this build's raylib backend cannot receive\n");
+    printf("                        file drops, so only the button works)\n");
+  }
+#endif
+  printf("                       Formats: ");
+  for (const std::string_view ext : referentia::board::kSupportedImageExtensions)
+    printf(".%s ", ext.data());
+  printf("\n");
 }
 
 // Returns true when the app should exit immediately without starting, i.e.
@@ -173,12 +240,61 @@ static bool InitApp(m_app::AppState& state) {
   m_app::BoardInit(state);
   m_app::BoardCreateUI(state.ecs);
 
+  // Back-pointer, set once the ECS exists. The importer is a member of
+  // AppState and is default-constructed before the window is even up, so this
+  // has to happen here rather than in a constructor.
+  state.importer.ecs = &state.ecs;
+
+#if defined(PLATFORM_WEB)
+  // The browser's drop handler and hidden file input, wired to this importer.
+  // The anchor provider is the same world point a desktop drop would use, so a
+  // dropped file lands under the pointer in both builds. It captures state by
+  // reference because the camera is ECS data, and the camera entity handle
+  // exists from CreateCamera above.
+  m_app::InstallWebFileBridge(state.importer, [&state] {
+    return referentia::board::ScreenToWorldCentre(
+        GetMousePosition().x, GetMousePosition().y, CameraTargetX(state),
+        CameraTargetY(state), CameraZoom(state), ViewportW(), ViewportH());
+  });
+#else
+  if (!m_app::kFileDropSupported) {
+    logger::warn("[IMPORT] drag and drop unavailable: {}",
+                 m_app::kFileDropUnsupportedReason);
+  } else {
+    logger::info("[IMPORT] drag and drop enabled; formats: {}",
+                 referentia::board::ImageFileFilter());
+  }
+#endif
+
   return true;
 }
 
 static void UpdateApp(m_app::AppState& state, float dt) {
   referentia::systems::UpdateCamera2D(state.ecs);
   m_app::BoardUpdate(state, dt);
+
+  // The import pipeline, in the order the three entry points require.
+  //
+  // Drops are polled first so a file dropped while a dialog is open is not
+  // noticed until the dialog closes -- the chooser is modal and takes over the
+  // event loop, so there is nothing to poll in the meantime anyway.
+  m_app::PollDroppedFiles(state.importer, TheCamera(state));
+
+  // The dialog is served here rather than in the widget pass that requested it.
+  // All three desktop choosers block until the user finishes, and a block
+  // mid-frame leaves a half-drawn board frozen behind the dialog until the next
+  // present.
+  m_app::FlushImageDialogRequest(state.importer, DialogAnchor(state));
+
+  // Decodes whatever the two above queued. This is the only place textures are
+  // uploaded, so it runs after the camera has been updated and the drop anchor
+  // is computed from this frame's transform rather than last frame's.
+  const int imported = m_app::UpdateImageImport(state.importer);
+  if (imported > 0) {
+    logger::info("[IMPORT] {} image(s) on the board ({} total, {} failed)",
+                 imported, state.importer.imported_count,
+                 state.importer.failed_count);
+  }
 }
 
 static void RenderApp(m_app::AppState& state) {
@@ -305,6 +421,13 @@ int RunApp(int argc, char** argv) {
   // or texture handles, and tearing down the GL context first would leave them
   // freeing from a dead context.
   m_eng::systems::ShutdownThreads();
+
+  // Imported textures go next, for the same reason and for the other half of it:
+  // a dropped texture is not reclaimed by anything, so a session that imported
+  // a few hundred screenshots would otherwise leak every one of them. The ECS
+  // still holds the nodes at this point, which is harmless because the window is
+  // about to close and no further query will run.
+  m_app::UnloadImportedTextures(state.importer);
 
   // Fonts are unloaded while the GL context is still alive, so their textures
   // are freed rather than leaked into a context that is about to vanish.

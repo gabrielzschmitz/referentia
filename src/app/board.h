@@ -1,6 +1,7 @@
 // app/board.h
 #pragma once
 
+#include "app/image_import.h"
 #include "app/screenshot.h"
 #include "components/board.h"
 #include "components/camera.h"
@@ -86,7 +87,7 @@ inline void BoardCreateUI(engine::ECS& ecs) {
     });
 
   const engine::Entity window =
-    ref::AddWindow(ecs, {20.f, 20.f}, 250.f, 0.f, "Board");
+    ref::AddWindow(ecs, {20.f, 20.f}, 250.f, 0.f, "Referentia");
   {
     // Horizontal inset only. The vertical rhythm -- every gap between rows,
     // groups and window edges -- is components::kRowGap, so that a gap means
@@ -136,6 +137,23 @@ inline void BoardCreateUI(engine::ECS& ecs) {
       if (on) g_frame_history.Clear();
     },
     {}, "Graph of the last four seconds of frame times.");
+
+  // --- Import -------------------------------------------------------------
+  // First in the panel, above the board actions. Placing an image is the thing a
+  // user opens a reference board to do, and every other control here is a
+  // view or a diagnostic; the panel reads as the app's controls rather than its
+  // debug switches.
+  const engine::Entity import = ref::AddGroup(ecs, window, "Import");
+
+  ref::AddButton(
+    ecs, window, import, "Open image...",
+    // Queued, not opened here: this handler runs inside the widget pass, and
+    // NSOpenPanel, IFileOpenDialog and gtk_file_chooser_run all block until the
+    // user is done. FlushImageDialogRequest() serves it from the update phase on
+    // the other side of the frame.
+    [] { referentia::app::RequestImageDialog(); },
+    "Choose images and place them at the centre of the view. Same as dropping "
+    "them on the board.");
 
   // --- Board --------------------------------------------------------------
   // Centred, and packed: the two actions belong side by side as a pair, so this

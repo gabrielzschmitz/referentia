@@ -68,6 +68,57 @@ local perf_table = {
 }
 local perf_flags = perf_table[_OPTIONS["perf"] or "none"]
 
+-- ---------------------------------------------------------------------------
+-- Linux file-dialog backend
+--
+-- The panel's "Open image..." button wants the desktop's own file chooser. On
+-- Linux there is no single API for that. GTK3 is the real thing, and it is
+-- also a heavyweight build dependency the app has no other reason to have, so
+-- it is used when the development package is installed and skipped when it is
+-- not -- app/file_dialog_linux.cpp falls back to zenity/kdialog at runtime in
+-- that case. A missing pkg-config is not an error here; it just means no GTK3.
+--
+-- Probed here rather than in the source with __has_include, because the
+-- question that matters is whether the *builder* has the dev package, and a
+-- header probe would also succeed for a runtime-only install.
+local function have_package(name)
+	return os.execute("pkg-config --exists " .. name .. " >/dev/null 2>&1") == true
+end
+
+-- The compile and link flags pkg-config reports for a package.
+--
+-- Both are needed, and neither alone is enough.
+--
+-- cflags: a bare links({ "gtk-3" }) puts -lgtk-3 on the link line and nothing on
+-- the compile line, so <gtk/gtk.h> is still not found and the build fails
+-- naming a system header rather than anything the project did.
+--
+-- libs: the full list rather than just -lgtk-3, because a GTK call pulls in
+-- glib and the linker now requires every DSO whose symbols end up in the binary
+-- to be named explicitly ("DSO missing from command line"). Naming only gtk-3
+-- compiles cleanly and then fails at the link on g_free.
+local function package_flags(kind, name)
+	local out = os.outputof("pkg-config --" .. kind .. " " .. name)
+	if out == nil then return {} end
+
+	local flags = {}
+	for word in out:gmatch("%S+") do
+		-- premake's links() adds the -l itself, so pkg-config's own -lgtk-3 has
+		-- to be handed over as gtk-3. Passing it through verbatim produces
+		-- -l-lgtk-3 on the link line, which the linker rejects with a message
+		-- about a library named "-lgtk-3".
+		if kind == "libs" then
+			word = word:gsub("^%-l", "")
+		end
+		flags[#flags + 1] = word
+	end
+	return flags
+end
+
+local use_gtk3_dialog = os.host() == "linux" and have_package("gtk+-3.0")
+
+-- ---------------------------------------------------------------------------
+
 local function apply_perf_flags()
 	if not perf_flags or #perf_flags == 0 then
 		return
@@ -600,8 +651,13 @@ buildoptions({ "/Zc:__cplusplus" })
 
 filter({ "system:windows", "options:not with-emscripten" })
 	defines({ "_WIN32", "NOMINMAX" })
-links({ "winmm", "gdi32", "opengl32" })
-libdirs({ "../bin/%{cfg.buildcfg}" })
+	-- ole32 + shell32 are the COM file dialog (IFileOpenDialog) that
+	-- app/file_dialog_win.cpp opens; uuid is the library that defines the
+	-- CLSID_FileOpenDialog interface constant on MinGW. MSVC resolves both from
+	-- the platform SDK without being told, but MinGW needs them named.
+	links({ "winmm", "gdi32", "opengl32", "ole32", "shell32", "uuid" })
+	libdirs({ "../bin/%{cfg.buildcfg}" })
+
 
 filter({ "system:linux", "options:not with-emscripten" })
 links({ "pthread", "m", "dl", "rt" })
@@ -609,22 +665,44 @@ links({ "pthread", "m", "dl", "rt" })
 filter({ "system:linux", "options:wayland=off", "options:not with-emscripten" })
 links({ "X11" })
 
+filter({ "system:linux", "options:not with-emscripten" })
+-- The GTK3 file chooser, only when premake5 found the development package
+-- (see have_package() at the top). The app compiles the GTK branch under
+-- REF_HAVE_GTK3 and the zenity/kdialog fallback without it, so a checkout on a
+-- machine without libgtk-3-dev still builds and still opens a file dialog.
+--
+-- Deliberately not under the wayland=off filter above. GTK3 is a widget toolkit
+-- rather than a display protocol, so it works on either: leaving this inside
+-- the X11 filter would silently drop the dialog down to zenity/kdialog on a
+-- Wayland build, on a machine where the user has libgtk-3-dev installed and
+-- expects it to be used. Wayland's own libraries are linked separately below.
+if use_gtk3_dialog then
+	defines({ "REF_HAVE_GTK3=1" })
+	buildoptions(package_flags("cflags", "gtk+-3.0"))
+	links(package_flags("libs", "gtk+-3.0"))
+end
+
 filter({ "system:linux", "options:wayland=on", "options:not with-emscripten" })
 links({ "wayland-client", "wayland-cursor", "wayland-egl", "xkbcommon" })
 
 filter({ "system:macosx", "options:not with-emscripten" })
-links({
-	"OpenGL.framework",
-	"Cocoa.framework",
-	"IOKit.framework",
-	"CoreFoundation.framework",
-	"CoreAudio.framework",
-	"CoreVideo.framework",
-	"AudioToolbox.framework",
-	"QuartzCore.framework",
-})
+	links({
+		"OpenGL.framework",
+		"Cocoa.framework",
+		"IOKit.framework",
+		"CoreFoundation.framework",
+		"CoreAudio.framework",
+		"CoreVideo.framework",
+		"AudioToolbox.framework",
+		"QuartzCore.framework",
+	})
+	-- NSOpenPanel is Objective-C++, so it lives in its own static library
+	-- (referentia-mac, below) rather than in this project's sources.
+	dependson({ "referentia-mac" })
+	links({ "referentia-mac" })
 
 filter({})
+
 
 -- Only build raylib library for non-web builds
 if not _OPTIONS["with-emscripten"] then
@@ -642,6 +720,24 @@ if not _OPTIONS["with-emscripten"] then
 	-- one of them in the repo root. config.h guards the feature with #ifndef, so
 	-- defining it to 0 here turns the built-in path off.
 	defines({ "SUPPORT_SCREEN_CAPTURE=0" })
+
+	-- Image decoders. raylib 6.0's config.h ships JPEG *off*
+	-- (SUPPORT_FILEFORMAT_JPG 0), and TGA off, and LoadImageFromMemory gates
+	-- its extension list on exactly those macros -- so out of the box it accepts
+	-- .png, .bmp, .gif, .qoi and .dds and silently refuses everything else.
+	--
+	-- That is the wrong default for this app. The point of Referentia is
+	-- dropping in images you already have, and photographs are JPEGs: a user who
+	-- drags in a screenshot-adjacent .jpg would get a rejected file rather than
+	-- an image, which reads as the app being broken. TGA is a couple of hundred
+	-- bytes of decoder and is common in the game-art side of a reference board.
+	-- Both are compiled into raylib's own stb_image path either way, so the cost
+	-- here is the define and not a new library.
+	--
+	-- Keep board/image_source.h's extension list in step with this: it filters
+	-- what the app will even try to load, and a format rejected here would
+	-- otherwise fail deep inside the decoder with no explanation.
+	defines({ "SUPPORT_FILEFORMAT_JPG=1", "SUPPORT_FILEFORMAT_TGA=1" })
 
 	location("build_files/")
 
@@ -746,6 +842,44 @@ if not _OPTIONS["with-emscripten"] then
 	buildoptions({ "-Winvalid-pch" })
 
 	apply_perf_flags()
+
+	filter({})
+end
+
+-- macOS-only Objective-C++ for the native file dialog.
+--
+-- NSOpenPanel is the only real system file chooser on macOS, and it is
+-- Objective-C, so it needs a .mm translation unit. It cannot simply join the app
+-- project: premake5's gmake backend emits one explicit compile rule per listed
+-- source and every one of them uses $(CXX), and g++ has no Objective-C++ front
+-- end at all. Listing the .mm alongside the .cpp files would therefore hand
+-- Objective-C++ to g++.
+--
+-- A one-file static library sidesteps that, and it is the same trick the raylib
+-- project above already uses for its own Cocoa code: pin the toolset to clang
+-- and pass -x objective-c++ so the language is selected explicitly rather than
+-- inferred from the extension. The flag only ever reaches this project, so the
+-- app's C++ is untouched.
+if os.host() == "macosx" and not _OPTIONS["with-emscripten"] then
+	group("Dependencies")
+
+	project("referentia-mac")
+	kind("StaticLib")
+	language("C++")
+	location("build_files/")
+	targetdir("../bin/%{cfg.buildcfg}")
+
+	files({ "../src/app/file_dialog_mac.mm" })
+	includedirs({ "../src" })
+	cppdialect("gnu++17")
+
+	toolset("clang")
+	buildoptions({ "-x", "objective-c++" })
+
+	-- Cocoa for NSOpenPanel and NSApp. raylib already links it, but a static
+	-- library's own link line is what resolves its undefined symbols, and
+	-- StaticLib projects do not inherit the consumer's frameworks.
+	links({ "Cocoa.framework" })
 
 	filter({})
 end

@@ -1,6 +1,7 @@
 // app/app_state.h
 #pragma once
 
+#include "app/image_import.h"
 #include "engine/ecs/ecs.h"
 
 namespace referentia::app {
@@ -21,6 +22,10 @@ namespace referentia::app {
  * valid entity, so defaulting to it meant code that read a handle before
  * assigning it would silently operate on whichever entity happened to be
  * allocated first instead of failing loudly.
+ *
+ * The importer is the one exception, and it is here because it owns GPU objects
+ * rather than board data. See ImageImporter::textures for why the ownership
+ * record cannot live in the ECS.
  * ============================================================================
  */
 
@@ -35,6 +40,17 @@ struct AppState {
   motrix::engine::Entity cameraEntity{motrix::engine::INVALID_ENTITY};
 
   motrix::engine::ECS ecs;
+
+  /**
+   * Imported images: the pending queue and every texture this session created.
+   *
+   * Placed after the ECS so the pointer to it can be taken in InitApp, and
+   * pointed back at that same ECS there. The back-pointer is set once and never
+   * reassigned; a null `ecs` makes UpdateImageImport() a no-op rather than a
+   * crash, which is the right failure mode for a member of a struct that is
+   * default-constructed in RunApp.
+   */
+  ImageImporter importer;
 };
 
 }  // namespace referentia::app

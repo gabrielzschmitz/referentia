@@ -15,8 +15,12 @@ namespace referentia::components {
  *
  * Tag <component> combinations are meaningful: an entity is a camera if it has
  * TagCamera, and it is the board root if it has TagWorldRoot. Entities are
- * otherwise classified structurally (e.g. a node is a node by having
- * components::NodeTransform), so the tags carry intent, not identity.
+ * otherwise classified structurally (e.g. an image node is one by having
+ * components::ImageNodeComponent), so the tags carry intent, not identity.
+ *
+ * TagGroup has no factory and no reader yet. It is declared because the group
+ * frame, tint and label are documented as ECS state, and adding the component
+ * alongside its first user keeps that promise checkable rather than aspirational.
  */
 struct TagCamera {
   static constexpr std::string_view Name = "TagCamera";

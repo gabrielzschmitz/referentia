@@ -12,6 +12,11 @@ including web builds.
 * **Emscripten SDK** (optional, for web builds only)
 * [VSCode](https://code.visualstudio.com/) (optional, for editing and building)
 
+Optional, and only for the *Open image…* button on Linux: GTK 3 development
+headers (`libgtk-3-dev`) for a native dialog. Without them the button falls back
+to `zenity` or `kdialog` at runtime, and every other part of the app builds and
+runs unchanged. Nothing else needs them — drag and drop is handled by GLFW.
+
 `raylib` is not a prerequisite — the build downloads it automatically on the
 first `premake5` run.
 
@@ -126,8 +131,24 @@ make config=release_x64
 ```
 
 > The Wayland path is supported by the vendored GLFW, but it is marked
-> experimental upstream and file drag-and-drop is not expected to work there.
-> Use the X11 build if you need import/export.
+> experimental upstream. Import and export go through the X11 protocols
+> (`wl_data_device_manager`, a `text/uri-list` drag), so they depend on the
+> compositor implementing them: a GNOME session and an XWayland-only
+> compositor will differ. Use the X11 build if import is load-bearing.
+
+#### The file dialog on Linux
+
+The *Open image…* button uses GTK 3 when premake found `gtk+-3.0` at build time.
+If it did not — a build on a machine without `libgtk-3-dev` — the same button
+falls back at runtime to whichever of `zenity` or `kdialog` is on `PATH`.
+
+There is deliberately no console prompt fallback. A prompt in a graphical app
+is unusable, so a build with none of the three says so in the log and
+`--help` rather than pretending to have a file chooser.
+
+Drag and drop needs neither, but it does need GLFW: builds made with
+`--backend win32` or `rgfw` have no drop support at all, and the app reports
+that at startup.
 
 #### Compilation database (for IDE support)
 
@@ -176,6 +197,21 @@ cd ..
 emmake make config=release_web
 ```
 
+or, equivalently, from the repository root:
+
+```sh
+./build.sh --web          # generate, build, then serve on :8000
+./build.sh --web --no-run # build only
+```
+
+`build.sh --web` checks for `emcc` and `emmake` before doing anything, so a
+missing SDK produces setup instructions rather than a link error about a
+missing toolchain. It regenerates the makefiles with `--with-emscripten` first:
+premake bakes the option into the generated makefiles, so a makefile left over
+from a desktop build would compile native objects and then fail at the link
+step. A desktop build after a web one regenerates them again for the same
+reason.
+
 Web builds always target OpenGL ES 2 (WebGL); if `--graphics` is omitted,
 premake defaults to it automatically.
 
@@ -185,6 +221,16 @@ premake defaults to it automatically.
 emrun --serve_after_close bin/Release/referentia.html
 ```
 
+or `./build.sh --web`, which serves `bin/Release` with `python3 -m http.server`
+and opens a browser.
+
+> Serving over HTTP rather than double-clicking the `.html` is not a
+> convenience. The build ships a `.wasm` and a `.data` sidecar, and browsers
+> refuse to fetch those over `file://`; the page loads and then fails to start
+> with a same-origin error that has nothing to do with the build. The
+> `--itchio` single-file build below is the one that is meant to be opened
+> directly.
+
 The web build produces `referentia.html`, `.js`, `.wasm` and `.data`, plus a
 `referentia-web.zip` ready to host anywhere.
 
@@ -192,6 +238,13 @@ The web build produces `referentia.html`, `.js`, `.wasm` and `.data`, plus a
 > can **read** dropped files but cannot drag references out to a native
 > application. Export on the web goes through the system clipboard (copy, then
 > paste into the target app).
+>
+> Import works the other way round too, with a real difference: there are no
+> paths. A dropped file arrives as bytes, so the node records the file's name
+> and the bytes are decoded straight into a texture. The *Open image…* button
+> opens a hidden `<input type="file">`, which is the only file chooser a page
+> is allowed to open and is asynchronous — the result arrives on a later frame
+> rather than from the click.
 
 ### Single-file build
 

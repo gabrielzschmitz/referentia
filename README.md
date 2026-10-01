@@ -40,6 +40,8 @@ Generates the makefiles, builds, and launches the app:
 | --- | --- |
 | `--debug` | Debug build: assertions and `LOG_DEBUG` output on |
 | `--no-run` | Build only, do not launch |
+| `--web` | Build for the browser with Emscripten, then serve it |
+| `--web-port N` | Port for `--web` to serve on (default: 8000) |
 | `--clean` | Full clean first (also wipes raylib, so it is slow) |
 | `--no-regen` | Skip makefile generation |
 | `-j, --jobs N` | Parallel job count (default: all cores) |
@@ -60,6 +62,25 @@ make config=release_x64 -j$(nproc)
 
 Builds land in `bin/<Config>/`. Other configurations: `debug_x64`,
 `release_x86`, `debug_x86`, `debug_arm64`, `release_arm64`.
+
+<details>
+<summary>Web &mdash; <code>./build.sh --web</code></summary>
+
+Needs an activated [Emscripten SDK](INSTALL.md#web-build-emscripten)
+(`source emsdk_env.sh`):
+
+```sh
+./build.sh --web
+```
+
+This generates the Emscripten makefiles, runs `emmake make config=release_web`,
+and serves the result on <http://localhost:8000/>. It is served over HTTP rather
+than opened as a file because browsers refuse to load the `.wasm` sidecar over
+`file://` — the page appears and then fails to start with an error that has
+nothing to do with the build.
+
+`--debug --web` builds the debug wasm target, and `--no-run` stops after the
+build.
 
 </details>
 
@@ -103,11 +124,45 @@ CI. It exits non-zero if any test fails.
 ## Features
 
 * Infinite pan/zoom reference board
-* Image and text nodes with drag, resize and rotate
-* Tag-based groups rendered as a labelled frame around their members
-* Auto-arrange: grid, shelf-pack, justify, distribute and fit-to-view, applied
-  to any selection with a keypress
-* Built on the Motrix ECS and raylib; runs on Windows, macOS, Linux and the web
+* **Image nodes**: drop images on the window, or use *Open image…* on the board
+  panel, to place a reference on the board. PNG, JPEG, BMP, TGA, GIF, QOI and
+  DDS, on every platform including the browser.
+* Board panel (F10), frame-rate readout (F11), frame-time graph (F8) and
+  timestamped screenshots (F12)
+
+Not built yet: dragging, resizing or rotating an image node, text nodes, group
+frames, auto-arrange, and saving a board. Image nodes are session-only —
+everything imported lives in memory and is gone when the app closes.
+
+### Where images land
+
+A node is placed at one image pixel per world unit, centred on where you dropped
+it (or on the middle of the view if it came from the dialog), so at zoom 1 a
+400&times;300 image is exactly 400&times;300 world units and lines up with the
+grid. The longest side is capped at 2000 units so a 4000&nbsp;px phone photo
+still lands somewhere you can find, and is only ever scaled *down*: a 64&times;64
+icon stays 64&times;64 rather than being blown up and blurred.
+
+### Platform notes
+
+| | Drop | Dialog |
+| --- | --- | --- |
+| Windows | yes | COM `IFileOpenDialog` |
+| macOS | yes | `NSOpenPanel` |
+| Linux (X11/Wayland) | yes | GTK 3, else `zenity`/`kdialog` |
+| Browser | yes, as bytes | the browser's file input |
+| raylib `PLATFORM_DESKTOP_WIN32` / `RGFW` | **no** | yes |
+
+The last row is a raylib limitation, not a Referentia one: file drop is a GLFW
+feature, and those two backends do not implement it. `./build.sh --web` and the
+default desktop builds both use GLFW, so this only affects a build made with
+`--platform` set to one of them. The app says so at startup and in `--help`
+rather than leaving drag and drop silently inert.
+
+On Linux, a build without `libgtk-3-dev` falls back to `zenity` or `kdialog` at
+runtime if either is installed; the native dialog is used whenever premake found
+GTK 3 at build time. There is no console prompt fallback, so a build with none of
+the three says so instead.
 
 ## Project Structure
 
