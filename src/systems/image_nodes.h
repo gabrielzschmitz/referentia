@@ -71,7 +71,36 @@ struct NodeGrab {
   /** Centre-to-corner angle when the grab began, for a rotate. */
   float corner_angle_at_grab = 0.f;
 
+  /**
+   * Whether this press can still become the first half of a double click.
+   *
+   * Cleared once the button has been held past the double-click interval, so a
+   * slow deliberate drag is never mistaken for a click followed by another one.
+   */
+  bool click_eligible = false;
+
+  /**
+   * The click waiting for a second one: a completed press on `click_entity`, and
+   * where and when it happened. Survives the end of the grab, since the second
+   * click is a separate press that arrives after the first one has been
+   * released -- which is why end() exists next to clear().
+   */
+  bool click_pending = false;
+  double click_time = 0.0;
+  Vector2 click_screen{0.f, 0.f};
+  engine::Entity click_entity = engine::INVALID_ENTITY;
+
   bool active() const { return mode != board_ns::GrabMode::None; }
+
+  /**
+   * Ends the drag but keeps the click record, so a press that turns out to be the
+   * first half of a double click is still visible to the press that follows it.
+   */
+  void end() {
+    mode = board_ns::GrabMode::None;
+    entity = engine::INVALID_ENTITY;
+    corner = -1;
+  }
 
   void clear() { *this = NodeGrab{}; }
 };
@@ -84,10 +113,32 @@ struct NodeGrab {
  * be a giant target when zoomed in and an unhittable speck when zoomed out, and
  * the user would have to zoom to a specific level to use the node at all.
  *
- * 9px is a little over the 7px Material minimum for a pointer target, and is
- * measured as a radius so a 18px-wide circle is grabbable anywhere across it.
+ * 6px is a step down from the 9px this started at. A 9px radius is an 18px
+ * circle, and four of those on a reference image are large enough to read as
+ * part of the picture rather than as something to grab. 6px is still a 12px
+ * diameter, comfortably over the 7px Material minimum for a pointer target.
  */
-constexpr float kHandleRadiusPx = 9.f;
+constexpr float kHandleRadiusPx = 6.f;
+
+/**
+ * How long a press has to be followed by a second one to count as a double
+ * click, in seconds.
+ *
+ * Comfortably above the ~0.1s a deliberate fast click takes and below the ~0.5s
+ * at which two separate clicks stop reading as one intent, so an ordinary double
+ * click always registers and a pair of separate gestures never merges.
+ */
+constexpr double kDoubleClickIntervalSeconds = 0.4;
+
+/**
+ * How far apart two presses can be and still be one double click, in screen
+ * pixels.
+ *
+ * The same 6px slop a desktop file manager allows, and for the same reason: the
+ * hand moves a little between two clicks on the same target, and requiring
+ * pixel-perfect aim is a rule the user learns by failing it.
+ */
+constexpr float kDoubleClickSlopPx = 6.f;
 
 /**
  * Whether the pointer is over any open panel, which suppresses node drags.
@@ -140,7 +191,6 @@ inline bool PointerOverUi(engine::ECS& ecs) {
  */
 inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
                              const Camera2D& cam) {
-  const bool pointer_down = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
   const Vector2 mouse = GetMousePosition();
   const board_ns::Vec2 pointer = board_ns::ScreenToWorldCentre(
       mouse.x, mouse.y, cam.target.x, cam.target.y, cam.zoom,
@@ -148,11 +198,26 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
       static_cast<float>(GetScreenHeight()));
 
   if (grab.active()) {
+    const bool pointer_down = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+
+    // A press held past the double-click interval is a drag, not the first half
+    // of a double click. Marked here rather than on release, because by release
+    // the second press may already have been missed.
+    if (grab.click_eligible && GetTime() - grab.click_time > kDoubleClickIntervalSeconds)
+      grab.click_eligible = false;
+
     if (!pointer_down) {
-      // Released: the grab ends here, and nothing is written on the final frame.
-      // Ending without applying means a click that never moved the pointer does
-      // not nudge the node by a rounding error.
-      grab.clear();
+      // Released. The grab ends without applying anything on the final frame: a
+      // click that never moved the pointer does not nudge the node by a rounding
+      // error. A press that was still eligible stays recorded as a pending click,
+      // because a second press after it is a double click on the node.
+      if (grab.click_eligible) {
+        grab.click_pending = true;
+        grab.click_time = GetTime();
+        grab.click_screen = mouse;
+        grab.click_entity = grab.entity;
+      }
+      grab.end();
       return;
     }
 
@@ -177,6 +242,33 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
 
   // No grab in progress. A press over a panel belongs to the panel.
   if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || PointerOverUi(ecs)) return;
+
+  // The body of the topmost node under the pointer, which is what a right press
+  // acts on and what a left press falls back to when it caught no handle.
+  engine::Entity body_entity = engine::INVALID_ENTITY;
+  board_ns::Rect body_rect{0.f, 0.f, 0.f, 0.f};
+  ecs.view<ec::TagNode, ec::NodeTransform, ec::ImageNodeComponent>(
+    [&](engine::Entity entity, ec::TagNode&, ec::NodeTransform& transform,
+        ec::ImageNodeComponent& node) {
+      if (node.texture_id == 0) return;
+      if (!board_ns::HitNodeBody(pointer, transform.rect, transform.rotation))
+        return;
+      // Last one wins: later nodes are drawn on top, so the topmost is picked.
+      body_entity = entity;
+      body_rect = transform.rect;
+    });
+
+  // A press consumes the pending click, so a third click starts a new pair instead
+  // of straightening the node again off the same record.
+  const float since_click = static_cast<float>(GetTime() - grab.click_time);
+  const float click_dx = mouse.x - grab.click_screen.x;
+  const float click_dy = mouse.y - grab.click_screen.y;
+  const bool double_click =
+      grab.click_pending && grab.click_entity != engine::INVALID_ENTITY &&
+      since_click <= static_cast<float>(kDoubleClickIntervalSeconds) &&
+      click_dx * click_dx + click_dy * click_dy <=
+          kDoubleClickSlopPx * kDoubleClickSlopPx;
+  grab.click_pending = false;
 
   const float pick_radius = board_ns::PixelsToWorld(kHandleRadiusPx, cam.zoom);
 
@@ -209,6 +301,28 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
       }
     });
 
+  // Whatever the press caught, this is the node it is about.
+  const engine::Entity target =
+      best_corner >= 0 ? best_entity : body_entity;
+  if (target == engine::INVALID_ENTITY) return;
+
+  // A second click on the same node within the interval straightens it, and
+  // starts no drag: the rotation is undone and the click is spent, so the image
+  // does not also jump under the pointer on the way to being straight.
+  if (double_click && target == grab.click_entity) {
+    ecs.view<ec::TagNode, ec::NodeTransform, ec::ImageNodeComponent>(
+        [&](engine::Entity entity, ec::TagNode&, ec::NodeTransform& transform,
+            ec::ImageNodeComponent&) {
+          if (entity == target) transform.rotation = 0.f;
+        });
+    return;
+  }
+
+  // The press starts a drag, and is the first half of a double click unless it
+  // turns out to be held.
+  grab.click_eligible = true;
+  grab.click_time = GetTime();
+
   if (best_corner >= 0) {
     grab.mode = board_ns::GrabMode::Rotate;
     grab.corner = best_corner;
@@ -231,22 +345,6 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
       });
     return;
   }
-
-  // No handle: the press may be on a node's body, which moves it.
-  engine::Entity body_entity = engine::INVALID_ENTITY;
-  board_ns::Rect body_rect{0.f, 0.f, 0.f, 0.f};
-  ecs.view<ec::TagNode, ec::NodeTransform, ec::ImageNodeComponent>(
-    [&](engine::Entity entity, ec::TagNode&, ec::NodeTransform& transform,
-        ec::ImageNodeComponent& node) {
-      if (node.texture_id == 0) return;
-      if (!board_ns::HitNodeBody(pointer, transform.rect, transform.rotation))
-        return;
-      // Last one wins: later nodes are drawn on top, so the topmost is picked.
-      body_entity = entity;
-      body_rect = transform.rect;
-    });
-
-  if (body_entity == engine::INVALID_ENTITY) return;
 
   grab.mode = board_ns::GrabMode::Move;
   grab.corner = -1;
