@@ -440,6 +440,43 @@ inline void UpdateImageNodes(engine::ECS& ecs, NodeGrab& grab,
 }
 
 /**
+ * Advances every animated node's clock and points it at the frame due now.
+ *
+ * Separate from the draw, and run from the update phase, for one reason that is
+ * easy to get wrong: a node that is off screen, or behind a panel, still has to
+ * keep its place in the animation. Ticking the clock where the frame is chosen
+ * would make an animation's progress depend on whether the user happened to be
+ * looking at it -- scroll a GIF out of view and back and it would have jumped
+ * forward, which is not something any image viewer does.
+ *
+ * The current frame is written into the node's own texture_id rather than being
+ * read at draw time, so the render path stays a single texture per node and
+ * every existing consumer of ImageNodeComponent keeps working unchanged. The
+ * component's doc says as much; this is where that promise is kept.
+ *
+ * `delta_ms` is passed in rather than read from the clock, because a system that
+ * reads GetTime() itself cannot be tested at all: a GIF's whole behaviour is
+ * about what happens over time, so the time has to be an argument.
+ */
+inline void UpdateImageAnimations(engine::ECS& ecs, double delta_ms) {
+  ecs.view<ec::TagNode, ec::ImageNodeComponent, ec::ImageAnimationComponent>(
+    [&](engine::Entity, ec::TagNode&, ec::ImageNodeComponent& node,
+        ec::ImageAnimationComponent& anim) {
+      // A negative delta means the caller lost a frame, not that time ran
+      // backwards. Clamped so a hitch cannot rewind an animation.
+      if (delta_ms > 0.0) anim.elapsed_ms += delta_ms;
+
+      // The schedule and the frame list are filled from one decode and are
+      // parallel by construction, but the draw uses an index into the latter, so
+      // a node whose two disagree would index past the end of its own textures.
+      const int frame = anim.current_frame();
+      if (frame < 0 || static_cast<size_t>(frame) >= anim.frame_texture_ids.size())
+        return;
+      node.texture_id = anim.frame_texture_ids[static_cast<size_t>(frame)];
+    });
+}
+
+/**
  * Draws every image node, a border around it, and a circle on each corner.
  *
  * The border and the handles are what make this a reference tool rather than a

@@ -126,15 +126,37 @@ CI. It exits non-zero if any test fails.
 * Infinite pan/zoom reference board
 * **Image nodes**: drop images on the window, or use *Open image…* on the board
   panel, to place a reference on the board. PNG, JPEG, BMP, TGA, GIF, QOI and
-  DDS, on every platform including the browser.
+  DDS, on every platform including the browser. An animated GIF plays on the
+  board, and a node that is scrolled out of view keeps its place in the
+  animation rather than pausing.
 * Move, rotate and straighten a node with the mouse: drag the image to move it,
   drag a corner to turn it, or double-click it to put it back upright.
 * Board panel (F10), frame-rate readout (F11), frame-time graph (F8) and
   timestamped screenshots (F12)
 
-Not built yet: resizing an image node, animated GIF playback, text nodes, group
-frames, auto-arrange, and saving a board. Image nodes are session-only —
-everything imported lives in memory and is gone when the app closes.
+Not built yet: resizing an image node, animated WebP or APNG, pausing or
+scrubbing an animation, text nodes, group frames, auto-arrange, and saving a
+board. Image nodes are session-only — everything imported lives in memory and is
+gone when the app closes.
+
+### Animated GIFs
+
+A GIF's own schedule is honoured: per-frame delays, and a file that loops once
+playing for ever, one that loops a set number of times playing that many times
+and then holding on its last frame, and a still GIF being just a picture.
+
+The frame rate of the app does not affect the playback rate. A node holds the
+elapsed time and works out which frame that falls in, rather than counting
+frames, so a GIF plays at the speed it says it should whether the board is
+running at 144fps or at 20. That matters more here than in an image viewer: a
+reference board is where someone measures something against a reference, and an
+animation playing at the wrong speed is one they cannot measure against.
+
+Frames are decoded once at import and each is uploaded as its own texture, so
+nothing is decoded while the board is being drawn. That costs VRAM per frame,
+and a file with more than 512 frames is refused with a message rather than
+decoded: a few thousand frames is tens of gigabytes, and the alternative is the
+app failing to allocate with the user's board still on screen.
 
 ### Where images land
 
