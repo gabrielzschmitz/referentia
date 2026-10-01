@@ -32,11 +32,20 @@ namespace referentia::board {
  * follow one pointer, and a per-node flag would have to be reconciled every frame
  * to work out which one wins; a single active grab makes "who owns this drag"
  * a field rather than a query.
+ *
+ * Rotate is a corner held between finger and cursor: the corner tracks the
+ * pointer. Spin is a free rotation with no corner held -- the pointer can be
+ * anywhere, and the node turns by however far the pointer has swung around the
+ * centre. They are different modes rather than one mode with a corner that may be
+ * absent because the anchor differs: a held corner anchors on the corner, a free
+ * rotation anchors on the pointer at the press, and the two produce visibly
+ * different motion from the first pixel of the drag.
  */
 enum class GrabMode {
   None,
   Move,
   Rotate,
+  Spin,
 };
 
 /**
@@ -239,6 +248,36 @@ inline Rect MoveBy(Rect r, Vec2 delta) {
 inline float RotationForCornerDrag(Vec2 centre, Vec2 pointer_now,
                                    float grab_angle, float start_rotation) {
   const float swing = AngleDelta(grab_angle, AngleTo(centre, pointer_now));
+  return NormaliseAngle(start_rotation + swing);
+}
+
+/**
+ * The rotation a free drag -- one with no corner held -- is asking for.
+ *
+ * Same "start rotation plus swing since the grab" rule as the corner drag, with
+ * the anchor taken from the pointer instead of from a corner: the angle from the
+ * centre to wherever the pointer was when the button went down. The two agree at
+ * the instant of the press, which is the point: a press on the body must not turn
+ * the image by the difference between the pointer's angle and some corner's.
+ * After that they diverge, and correctly so -- a held corner has to stay under
+ * the cursor, while a free rotation has nothing to stay under it and only owes
+ * the pointer its swing.
+ *
+ * The pointer swinging over the centre is the one case that has no answer: the
+ * angle is undefined there, and the instant before and the instant after are a
+ * half turn apart. So the centre is not this function's problem to solve -- the
+ * caller skips the update while the pointer is inside a dead zone around the
+ * centre, which leaves the node holding its last angle until the pointer is out
+ * the other side. Feeding a pointer at the centre in here would make the node
+ * spin wildly.
+ *
+ * As with the corner drag, the rect is untouched: the node turns about its centre
+ * and stays exactly where it was.
+ */
+inline float RotationForFreeDrag(Vec2 centre, Vec2 pointer_now,
+                                 Vec2 pointer_at_grab, float start_rotation) {
+  const float swing =
+      AngleDelta(AngleTo(centre, pointer_at_grab), AngleTo(centre, pointer_now));
   return NormaliseAngle(start_rotation + swing);
 }
 

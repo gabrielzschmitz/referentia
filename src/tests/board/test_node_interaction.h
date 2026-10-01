@@ -423,3 +423,69 @@ TEST(test_rotationForCornerDrag_preservesSizeAndAspect) {
   const ni::Vec2 after = ni::NodeCorner(r, rotation, ni::kCornerTopLeft);
   CHECK_NEAR(std::hypot(after.x - centre.x, after.y - centre.y), radius, 0.01f);
 }
+
+// --- free rotate drag (right button, no corner held) ---
+
+TEST(test_rotationForFreeDrag_pressAloneChangesNothing) {
+  // The right button spins from wherever the pointer is, not from a corner, so
+  // the press itself must not turn the image. If this moved, every right click on
+  // an image would snap it to face the cursor.
+  const ni::Vec2 centre{50.f, 50.f};
+  const ni::Vec2 pointer{120.f, 50.f};
+  const float start = -0.4f;
+  CHECK_NEAR(ni::RotationForFreeDrag(centre, pointer, pointer, start), start,
+             kEps);
+}
+
+TEST(test_rotationForFreeDrag_isTheSwingSinceThePress) {
+  const ni::Vec2 centre{0.f, 0.f};
+  const ni::Vec2 press{80.f, 0.f};
+  const float start = 0.5f;
+  // 40 degrees clockwise on screen around the centre.
+  const float swing = 40.f * kPi / 180.f;
+  const ni::Vec2 now{80.f * std::cos(swing), 80.f * std::sin(swing)};
+  CHECK_NEAR(ni::RotationForFreeDrag(centre, now, press, start),
+             ni::NormaliseAngle(start + swing), 0.001f);
+}
+
+TEST(test_rotationForFreeDrag_isIndependentOfTheRadius) {
+  // The pointer's distance from the centre is not the angle, and a spin has to
+  // turn by the swing alone: a drag that wanders in and out while swinging ends
+  // at the same rotation as one that holds a steady arc.
+  const ni::Vec2 centre{0.f, 0.f};
+  const float start = 0.f;
+  const float swing = 1.1f;
+  const ni::Vec2 near{2.f * std::cos(swing), 2.f * std::sin(swing)};
+  const ni::Vec2 far{900.f * std::cos(swing), 900.f * std::sin(swing)};
+  CHECK_NEAR(ni::RotationForFreeDrag(centre, near, {3.f, 0.f}, start),
+             ni::RotationForFreeDrag(centre, far, {3.f, 0.f}, start), kEps);
+}
+
+TEST(test_rotationForFreeDrag_crossingTheBranchCutIsTheShortWay) {
+  // The pointer swings past the -x axis, where the raw difference of the two
+  // angles is nearly a full turn. Going the short way is the whole reason the
+  // swing goes through AngleDelta.
+  const ni::Vec2 centre{0.f, 0.f};
+  const ni::Vec2 press{10.f, 0.5f};
+  const ni::Vec2 now{10.f, -0.5f};
+  const float start = 0.f;
+  const float got = ni::RotationForFreeDrag(centre, now, press, start);
+  CHECK_NEAR(got, ni::NormaliseAngle(ni::AngleDelta(
+                         ni::AngleTo(centre, press), ni::AngleTo(centre, now))),
+             kEps);
+  CHECK(std::abs(got) < 0.2f);
+}
+
+TEST(test_rotationForFreeDrag_staysNormalised) {
+  // Spinning repeatedly in one direction crosses +pi every turn, so the result
+  // has to come back in range or the renderer accumulates unbounded radians.
+  const ni::Vec2 centre{0.f, 0.f};
+  for (int turn = 1; turn <= 5; ++turn) {
+    const float a = 0.2f * static_cast<float>(turn);
+    const float b = 0.4f * static_cast<float>(turn);
+    const float got = ni::RotationForFreeDrag(centre, {std::cos(b), std::sin(b)},
+                                              {std::cos(a), std::sin(a)}, 0.f);
+    CHECK(got > -kPi);
+    CHECK(got <= kPi);
+  }
+}
