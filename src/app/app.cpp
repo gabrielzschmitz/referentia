@@ -22,6 +22,7 @@
 #include "systems/board_cursor.h"
 #include "systems/board_debug.h"
 #include "systems/camera.h"
+#include "systems/image_nodes.h"
 #include "systems/perf_panel.h"
 #include "systems/ui.h"
 
@@ -295,6 +296,12 @@ static void UpdateApp(m_app::AppState& state, float dt) {
                  imported, state.importer.imported_count,
                  state.importer.failed_count);
   }
+
+  // Node dragging and rotation, after the import so a node created this frame can
+  // be picked up immediately, and after the camera so the world<->screen
+  // conversion uses this frame's transform rather than last frame's.
+  referentia::systems::UpdateImageNodes(state.ecs, state.nodeGrab,
+                                        TheCamera(state));
 }
 
 static void RenderApp(m_app::AppState& state) {
@@ -308,6 +315,16 @@ static void RenderApp(m_app::AppState& state) {
   BeginMode2D(cam.camera);
 
   m_app::BoardRender(state);
+
+  // Nodes, not inside BoardRender: the board's own render is the landmarks and
+  // the world grid, which are the board's furniture, while these are its
+  // contents. Drawn after them so an image covers the grid rather than being
+  // grid-overlaid, which is what a reference image on top of a drawing surface
+  // should look like.
+  //
+  // The camera is passed because the corner handles are sized in screen pixels
+  // and need its zoom to become world units.
+  referentia::systems::DrawImageNodes(state.ecs, cam.camera);
 
   EndMode2D();
 

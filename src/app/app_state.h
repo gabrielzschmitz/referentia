@@ -3,6 +3,7 @@
 
 #include "app/image_import.h"
 #include "engine/ecs/ecs.h"
+#include "systems/image_nodes.h"
 
 namespace referentia::app {
 
@@ -51,6 +52,17 @@ struct AppState {
    * default-constructed in RunApp.
    */
   ImageImporter importer;
+
+  /**
+   * The node currently held by the pointer, if any.
+   *
+   * Transient input state rather than board data, so it does not live in the ECS
+   * and no node "knows" it is being dragged -- it just finds its transform
+   * changed. Holding it here rather than in a component is what keeps "which
+   * node owns this drag" a single field instead of a per-frame query over
+   * every node's flag.
+   */
+  referentia::systems::NodeGrab nodeGrab;
 };
 
 }  // namespace referentia::app
