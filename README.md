@@ -127,10 +127,12 @@ CI. It exits non-zero if any test fails.
 * **Image nodes**: drop images on the window, or use *Open image…* on the board
   panel, to place a reference on the board. PNG, JPEG, BMP, TGA, GIF, QOI and
   DDS, on every platform including the browser.
+* Move, rotate and straighten a node with the mouse: drag the image to move it,
+  drag a corner to turn it, or double-click it to put it back upright.
 * Board panel (F10), frame-rate readout (F11), frame-time graph (F8) and
   timestamped screenshots (F12)
 
-Not built yet: dragging, resizing or rotating an image node, text nodes, group
+Not built yet: resizing an image node, animated GIF playback, text nodes, group
 frames, auto-arrange, and saving a board. Image nodes are session-only —
 everything imported lives in memory and is gone when the app closes.
 
@@ -142,6 +144,22 @@ it (or on the middle of the view if it came from the dialog), so at zoom 1 a
 grid. The longest side is capped at 2000 units so a 4000&nbsp;px phone photo
 still lands somewhere you can find, and is only ever scaled *down*: a 64&times;64
 icon stays 64&times;64 rather than being blown up and blurred.
+
+### Moving and turning an image
+
+A node draws a border and four corner handles, and the left button works on
+them. Drag the image to move it, drag a corner to turn it around its centre, and
+double-click the image to straighten it — the reset is a click rather than a
+drag, so straightening does not require aiming at anything.
+
+The right button turns a node too, and it needs no corner: press anywhere on
+the image and swing the pointer around its centre, and it turns by however far
+the pointer has swung. That is the gesture for a rough angle, which is what most
+rotations are, and the corner handles are for the ones that have to be exact.
+
+Panning is on the middle button or space+left, deliberately not on a bare left
+drag, so that a left drag is never ambiguous between moving the board and moving
+an image.
 
 ### Platform notes
 
