@@ -63,6 +63,8 @@ make config=release_x64 -j$(nproc)
 Builds land in `bin/<Config>/`. Other configurations: `debug_x64`,
 `release_x86`, `debug_x86`, `debug_arm64`, `release_arm64`.
 
+</details>
+
 <details>
 <summary>Web &mdash; <code>./build.sh --web</code></summary>
 
@@ -121,89 +123,6 @@ CI. It exits non-zero if any test fails.
 
 ---
 
-## Features
-
-* Infinite pan/zoom reference board
-* **Image nodes**: drop images on the window, or use *Open image…* on the board
-  panel, to place a reference on the board. PNG, JPEG, BMP, TGA, GIF, QOI and
-  DDS, on every platform including the browser. An animated GIF plays on the
-  board, and a node that is scrolled out of view keeps its place in the
-  animation rather than pausing.
-* Move, rotate and straighten a node with the mouse: drag the image to move it,
-  drag a corner to turn it, or double-click it to put it back upright.
-* Board panel (F10), frame-rate readout (F11), frame-time graph (F8) and
-  timestamped screenshots (F12)
-
-Not built yet: resizing an image node, animated WebP or APNG, pausing or
-scrubbing an animation, text nodes, group frames, auto-arrange, and saving a
-board. Image nodes are session-only — everything imported lives in memory and is
-gone when the app closes.
-
-### Animated GIFs
-
-A GIF's own schedule is honoured: per-frame delays, and a file that loops once
-playing for ever, one that loops a set number of times playing that many times
-and then holding on its last frame, and a still GIF being just a picture.
-
-The frame rate of the app does not affect the playback rate. A node holds the
-elapsed time and works out which frame that falls in, rather than counting
-frames, so a GIF plays at the speed it says it should whether the board is
-running at 144fps or at 20. That matters more here than in an image viewer: a
-reference board is where someone measures something against a reference, and an
-animation playing at the wrong speed is one they cannot measure against.
-
-Frames are decoded once at import and each is uploaded as its own texture, so
-nothing is decoded while the board is being drawn. That costs VRAM per frame,
-and a file with more than 512 frames is refused with a message rather than
-decoded: a few thousand frames is tens of gigabytes, and the alternative is the
-app failing to allocate with the user's board still on screen.
-
-### Where images land
-
-A node is placed at one image pixel per world unit, centred on where you dropped
-it (or on the middle of the view if it came from the dialog), so at zoom 1 a
-400&times;300 image is exactly 400&times;300 world units and lines up with the
-grid. The longest side is capped at 2000 units so a 4000&nbsp;px phone photo
-still lands somewhere you can find, and is only ever scaled *down*: a 64&times;64
-icon stays 64&times;64 rather than being blown up and blurred.
-
-### Moving and turning an image
-
-A node draws a border and four corner handles, and the left button works on
-them. Drag the image to move it, drag a corner to turn it around its centre, and
-double-click the image to straighten it — the reset is a click rather than a
-drag, so straightening does not require aiming at anything.
-
-The right button turns a node too, and it needs no corner: press anywhere on
-the image and swing the pointer around its centre, and it turns by however far
-the pointer has swung. That is the gesture for a rough angle, which is what most
-rotations are, and the corner handles are for the ones that have to be exact.
-
-Panning is on the middle button or space+left, deliberately not on a bare left
-drag, so that a left drag is never ambiguous between moving the board and moving
-an image.
-
-### Platform notes
-
-| | Drop | Dialog |
-| --- | --- | --- |
-| Windows | yes | COM `IFileOpenDialog` |
-| macOS | yes | `NSOpenPanel` |
-| Linux (X11/Wayland) | yes | GTK 3, else `zenity`/`kdialog` |
-| Browser | yes, as bytes | the browser's file input |
-| raylib `PLATFORM_DESKTOP_WIN32` / `RGFW` | **no** | yes |
-
-The last row is a raylib limitation, not a Referentia one: file drop is a GLFW
-feature, and those two backends do not implement it. `./build.sh --web` and the
-default desktop builds both use GLFW, so this only affects a build made with
-`--platform` set to one of them. The app says so at startup and in `--help`
-rather than leaving drag and drop silently inert.
-
-On Linux, a build without `libgtk-3-dev` falls back to `zenity` or `kdialog` at
-runtime if either is installed; the native dialog is used whenever premake found
-GTK 3 at build time. There is no console prompt fallback, so a build with none of
-the three says so instead.
-
 ## Project Structure
 
 ```text
@@ -257,4 +176,3 @@ for details.
 * **Work Sans**: SIL Open Font License 1.1. All nine statics (Thin
   through Black, upright and italic) are bundled; see
   [`resources/fonts/OFL.txt`](resources/fonts/OFL.txt).
-
