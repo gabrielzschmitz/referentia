@@ -11,6 +11,7 @@
 #include "board/test_board_math.h"
 #include "board/test_board_entities.h"
 #include "board/test_image_source.h"
+#include "board/test_node_interaction.h"
 #include "ecs/bench_ecs.h"
 #include "ecs/ecs_sample_components.h"
 #include "ecs/test_ecs.h"
